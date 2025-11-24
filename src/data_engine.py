@@ -1,0 +1,359 @@
+import sqlite3
+
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from datetime import datetime
+import time
+from typing import Optional, List, Callable, Any
+
+class DataManager:
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+
+    def get_connection(self) -> sqlite3.Connection:
+        # [SAFETY] Increased timeout to 30s to prevent 'database is locked' errors
+        return sqlite3.connect(self.db_path, timeout=30.0)
+
+    def init_db(self) -> None:
+        """Initialize the SQLite database with required tables."""
+        print(f"Initializing DB at {self.db_path}")
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # OHLCV Data Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ohlcv (
+                ticker TEXT,
+                date TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                PRIMARY KEY (ticker, date)
+            )
+        ''')
+        
+        # Metadata Table (for tracking last update)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS metadata (
+                ticker TEXT PRIMARY KEY,
+                last_updated TEXT
+            )
+        ''')
+
+        # Watchlist Table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tracked_symbols (
+                symbol TEXT PRIMARY KEY
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+
+    def normalize_ticker(self, ticker: str) -> str:
+        """
+        Normalize ticker symbol for different markets.
+        - US: AAPL -> AAPL
+        - TW: 2330 -> 2330.TW (or .TWO)
+        - Crypto: BTC -> BTC-USD
+        """
+        try:
+            ticker = ticker.strip().upper()
+            
+            # Check if it's a Taiwan stock (numeric, 4 digits)
+            if ticker.isdigit() and len(ticker) == 4:
+                # Try .TW first
+                test_ticker = f"{ticker}.TW"
+                try:
+                    # Fast check with history
+                    hist = yf.Ticker(test_ticker).history(period='1d')
+                    if not hist.empty:
+                        return test_ticker
+                except:
+                    pass
+                
+                # Try .TWO
+                test_ticker = f"{ticker}.TWO"
+                try:
+                    hist = yf.Ticker(test_ticker).history(period='1d')
+                    if not hist.empty:
+                        return test_ticker
+                except:
+                    pass
+                
+                # Default to .TW if check fails but looks like TW stock
+                return f"{ticker}.TW"
+
+            # Check if it's likely a Crypto (e.g., BTC, ETH) and not a standard US ticker
+            known_cryptos = {'BTC', 'ETH', 'DOGE', 'XRP', 'SOL', 'ADA'}
+            if ticker in known_cryptos:
+                return f"{ticker}-USD"
+
+            return ticker
+        except Exception as e:
+            print(f"Warning: normalize_ticker failed for {ticker}: {e}. Defaulting to {ticker}.TW")
+            return f"{ticker}.TW"
+
+    def _calc_smart_start(self, ticker: str) -> str:
+        """
+        Calculate the smart start date for updating data.
+        - If no data: Returns "2000-01-01"
+        - If data exists: Returns last_updated + 1 day
+        - If up-to-date: Returns None (indicates no update needed)
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT last_updated FROM metadata WHERE ticker=?", (ticker,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        if not row:
+            return "2000-01-01"
+            
+        last_updated = row[0]
+        
+        if last_updated >= today:
+            return None # Up to date
+            
+        # If we have data, start from next day
+        last_dt = pd.to_datetime(last_updated)
+        next_day = last_dt + pd.Timedelta(days=1)
+        start_date = next_day.strftime('%Y-%m-%d')
+        
+        if start_date > today:
+            return None
+            
+        return start_date
+
+    def fetch_data(self, ticker: str, start_date: Optional[str] = None, end_date: Optional[str] = None, progress_callback: Optional[Callable[[float, str], None]] = None) -> None:
+        """
+        Fetch data from yfinance and store in DB.
+        Supports chunked downloading for progress tracking.
+        """
+        # Default to a reasonable start date if not provided
+        if not start_date:
+            start_date = "2020-01-01"
+        
+        if not end_date:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+
+        # Convert to datetime objects for chunking
+        start_dt = pd.to_datetime(start_date)
+        end_dt = pd.to_datetime(end_date)
+        
+        # Generate yearly chunks
+        years = range(start_dt.year, end_dt.year + 1)
+        total_years = len(years)
+        
+        all_dfs = []
+        
+        for i, year in enumerate(years):
+            chunk_start = f"{year}-01-01"
+            chunk_end = f"{year}-12-31"
+            
+            # Adjust for actual start/end
+            if year == start_dt.year:
+                chunk_start = start_date
+            if year == end_dt.year:
+                chunk_end = end_date
+                
+            # Skip if start > end
+            if pd.to_datetime(chunk_start) > pd.to_datetime(chunk_end):
+                continue
+
+            if progress_callback:
+                progress_callback(i / total_years, f"Downloading {ticker} data for {year}...")
+
+            try:
+                df_chunk = yf.download(ticker, start=chunk_start, end=chunk_end, progress=False, multi_level_index=False, auto_adjust=True)
+                if not df_chunk.empty:
+                    all_dfs.append(df_chunk)
+            except Exception as e:
+                print(f"Error fetching {year} for {ticker}: {e}")
+
+        if progress_callback:
+            progress_callback(1.0, f"Finalizing {ticker} data...")
+
+        
+        if not all_dfs:
+            print(f"No data fetched for {ticker}")
+            return
+
+        # [ROBUSTNESS] Deduplication and Sorting
+        df = pd.concat(all_dfs)
+        # Ensure index is named 'date' for consistency before reset_index if possible, 
+        # but better to reset first then rename.
+        df.index.name = 'date' 
+        df = df.reset_index()
+        
+        # Normalize columns to lowercase
+        df.columns = [str(c).lower() for c in df.columns]
+        
+        # [ROBUSTNESS] Drop duplicates based on date
+        if 'date' in df.columns:
+            df = df.drop_duplicates(subset=['date']).sort_values('date')
+        
+        # Efficient way:
+        data_tuples = []
+        for _, row in df.iterrows():
+            # Ensure we access the correct columns. yfinance usually gives 'Date' which becomes 'date'
+            # and 'Open', 'High' etc which become 'open', 'high'
+            try:
+                data_tuples.append((
+                    ticker, row['date'].strftime('%Y-%m-%d'), row['open'], row['high'], 
+                    row['low'], row['close'], row['volume']
+                ))
+            except KeyError as e:
+                print(f"Skipping row due to missing column: {e}")
+                continue
+            
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.executemany('''
+            INSERT OR REPLACE INTO ohlcv (ticker, date, open, high, low, close, volume)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', data_tuples)
+        
+        # Update Metadata
+        today = datetime.now().strftime('%Y-%m-%d')
+        cursor.execute('''
+            INSERT OR REPLACE INTO metadata (ticker, last_updated)
+            VALUES (?, ?)
+        ''', (ticker, today))
+        
+        conn.commit()
+        conn.close()
+
+
+    def get_data(self, ticker: str) -> pd.DataFrame:
+        """Load data from DB for a specific ticker."""
+        conn = self.get_connection()
+        try:
+            # Use parameterized query for safety, though ticker is internal
+            query = "SELECT * FROM ohlcv WHERE ticker=? ORDER BY date ASC"
+            df = pd.read_sql(query, conn, params=(ticker,))
+        finally:
+            conn.close()
+        
+        if not df.empty:
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date') # Explicit assignment instead of inplace
+            
+            # Rename columns to Title Case to match BacktestEngine expectations
+            df = df.rename(columns={
+                'open': 'Open',
+                'high': 'High',
+                'low': 'Low',
+                'close': 'Close',
+                'volume': 'Volume'
+            })
+            
+            # Ensure numeric columns are floats
+            cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            for c in cols:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce') # Add errors='coerce'
+            
+            # [SAFETY] Clean Data: Replace Inf with NaN and drop NaNs
+            df = df.replace([np.inf, -np.inf], np.nan).dropna()
+        
+        # [ROBUSTNESS] Empty Guard
+        if df.empty:
+            raise ValueError(f"No valid data for ticker '{ticker}' after cleaning")
+                
+        return df
+
+    def update_data_if_needed(self, ticker: str, progress_callback: Optional[Callable[[float, str], None]] = None) -> None:
+        """Check if data is stale and update if necessary."""
+        # [REFACTOR] Use _calc_smart_start
+        start_date = self._calc_smart_start(ticker)
+        
+        if start_date:
+            print(f"Updating data for {ticker} from {start_date}...")
+            self.fetch_data(ticker, start_date=start_date, progress_callback=progress_callback)
+        else:
+            print(f"Data for {ticker} is up to date.")
+            if progress_callback:
+                progress_callback(1.0, "Data is up to date.")
+
+    def add_to_watchlist(self, symbol: str) -> None:
+        """Add a symbol to the watchlist."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("INSERT OR IGNORE INTO tracked_symbols (symbol) VALUES (?)", (symbol,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def remove_from_watchlist(self, symbol: str) -> None:
+        """Remove a symbol from the watchlist."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM tracked_symbols WHERE symbol=?", (symbol,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_watchlist(self) -> List[str]:
+        """Get all symbols from the watchlist."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT symbol FROM tracked_symbols")
+            rows = cursor.fetchall()
+            return [row[0] for row in rows]
+        finally:
+            conn.close()
+
+    def update_all_tracked_symbols(self, progress_callback: Optional[Callable[[float, str], None]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> None:
+        """
+        Update all symbols in the watchlist.
+        Smart logic:
+        - If no data: Download from 2000-01-01.
+        - If data exists: Download from last_updated + 1 day.
+        - If up-to-date: Skip.
+        
+        Overrides:
+        - If start_date is provided, it overrides the smart start date logic.
+        - If end_date is provided, it overrides the default end date (today).
+        """
+        watchlist = self.get_watchlist()
+        if not watchlist:
+            print("Watchlist is empty.")
+            return
+        
+        total = len(watchlist)
+        
+        for i, symbol in enumerate(watchlist):
+            if progress_callback:
+                progress_callback(i / total, f"Checking {symbol} ({i+1}/{total})...")
+            
+            print(f"Processing {symbol}...")
+            
+            current_start_date = start_date
+            current_end_date = end_date
+            
+            # If no start_date override, use smart logic
+            if not current_start_date:
+                # [REFACTOR] Use _calc_smart_start
+                smart_start = self._calc_smart_start(symbol)
+                if not smart_start:
+                    print(f"{symbol} is up-to-date.")
+                    continue
+                current_start_date = smart_start
+
+            print(f"Updating {symbol} from {current_start_date}...")
+            self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None) # Internal progress handled?
+            
+            # Sleep to avoid rate limit
+            time.sleep(0.5)
+
+        if progress_callback:
+            progress_callback(1.0, "All symbols updated.")
