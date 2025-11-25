@@ -128,12 +128,25 @@ from openai import OpenAI
 from typing import Optional
 # [FIX] Import the engineered system prompt to ensure high-quality strategy generation
 from src.ai.prompts import SYSTEM_PROMPT 
+from src.config.settings import settings
+from functools import lru_cache
+import hashlib
+import json
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 class LLMClient:
     """
     Client for interacting with the OpenAI API (or compatible APIs like OpenRouter) 
     to generate strategy code.
+    Singleton pattern ensures only one instance exists.
     """
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(LLMClient, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -141,11 +154,16 @@ class LLMClient:
         The API key is not strictly required at initialization to allow for lazy loading
         and dynamic configuration via the UI.
         """
+        if getattr(self, "_initialized", False):
+            return
+            
         self.api_key = api_key
         self.client = None
         # Lazy initialization is handled in generate_strategy_code to support dynamic settings
         if self.api_key:
             self.client = OpenAI(api_key=self.api_key)
+        
+        self._initialized = True
 
     def _get_api_key(self) -> Optional[str]:
         """
@@ -202,9 +220,13 @@ class LLMClient:
         cleaned = re.sub(r'\s*```$', '', cleaned)
         return cleaned
 
+    @lru_cache(maxsize=100)
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception_type(Exception))
     def generate_strategy_code(self, prompt: str, model: Optional[str] = None) -> str:
         """
         Generates strategy code based on the provided prompt using LLM API.
+        Cached to prevent redundant calls.
+        Retries on failure.
 
         Args:
             prompt (str): The user's description of the strategy.
@@ -258,17 +280,21 @@ class LLMClient:
                     # [FIX] Use the robust SYSTEM_PROMPT instead of a simple string
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt}
-                ]
+                ],
+                temperature=settings.DEFAULT_TEMPERATURE,
+                top_p=settings.DEFAULT_TOP_P
             )
             return self.clean_code(str(response.choices[0].message.content))
         except Exception as e:
             # In a real app, log error properly
             raise e
 
-    def get_completion(self, messages: list, model: Optional[str] = None, temperature: float = 0.0) -> str:
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception_type(Exception))
+    def get_completion(self, messages: list, model: Optional[str] = None, temperature: float = settings.DEFAULT_TEMPERATURE) -> str:
         """
         Generates a completion for a list of messages.
         Used for Agent interactions.
+        Retries on failure.
         
         Args:
             messages (list): List of message dicts [{"role": "...", "content": "..."}, ...]
@@ -311,8 +337,66 @@ class LLMClient:
             response = client.chat.completions.create(
                 model=final_model,
                 messages=messages,
-                temperature=temperature
+                temperature=temperature,
+                top_p=settings.DEFAULT_TOP_P
             )
             return str(response.choices[0].message.content)
+        except Exception as e:
+            raise e
+
+    def get_response_stream(self, messages: list, model: Optional[str] = None, temperature: float = settings.DEFAULT_TEMPERATURE):
+        """
+        Generates a streaming completion for a list of messages.
+        Yields content chunks.
+        
+        Args:
+            messages (list): List of message dicts.
+            model (str): Optional model override.
+            temperature (float): Sampling temperature.
+            
+        Yields:
+            str: Content chunks.
+        """
+        api_key = self._get_api_key()
+        base_url = self._get_base_url()
+        
+        if not api_key:
+            raise ValueError("LLM API Key is missing. Please set it in Global Settings or .env file (API_KEY).")
+
+        # Determine model priority
+        final_model: str = "gpt-4o"
+        
+        try:
+            import streamlit as st
+            if 'llm_model' in st.session_state and st.session_state['llm_model']:
+                final_model = str(st.session_state['llm_model'])
+        except ImportError:
+            pass
+
+        if model:
+             final_model = model
+        elif not final_model or final_model == "gpt-4o":
+             env_model = os.getenv("MODEL_NAME")
+             if env_model:
+                 final_model = env_model
+        
+        client: OpenAI
+        if base_url and base_url.strip():
+            client = OpenAI(api_key=api_key, base_url=base_url)
+        else:
+            client = OpenAI(api_key=api_key)
+
+        try:
+            stream = client.chat.completions.create(
+                model=final_model,
+                messages=messages,
+                temperature=temperature,
+                top_p=settings.DEFAULT_TOP_P,
+                stream=True
+            )
+            
+            for chunk in stream:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
         except Exception as e:
             raise e

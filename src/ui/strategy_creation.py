@@ -6,11 +6,7 @@ from src.ai.prompts import SYSTEM_PROMPT
 from src.strategies.loader import StrategyLoader, StrategyLoadError
 from src.backtest_engine import BacktestEngine
 from src.strategies.manager import StrategyManager
-from src.config.settings import (
-    DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE, 
-    DEFAULT_MIN_COMMISSION, DEFAULT_RSI_PERIOD, DEFAULT_RSI_BUY_THRESHOLD,
-    DEFAULT_RSI_SELL_THRESHOLD, DEFAULT_MA_WINDOW
-)
+from src.config.settings import settings
 from src.analytics.performance import calculate_cagr, calculate_max_drawdown, calculate_sharpe_ratio, calculate_win_rate
 
 def render_strategy_creation_page(dm):
@@ -33,16 +29,32 @@ def render_strategy_creation_page(dm):
         col1, col2, col3 = st.columns(3)
         
         available_tickers = watchlist
-        ticker = col1.selectbox("Select Ticker", available_tickers)
+        
+        # Filter Ticker by Category
+        from src.utils import categorize_ticker
+        filter_cat = st.radio(
+            "Filter Ticker by Category:", 
+            ["All", "TW", "US", "Crypto", "Other"], 
+            horizontal=True
+        )
+        
+        if filter_cat != "All":
+            filtered_tickers = [t for t in available_tickers if categorize_ticker(t) == filter_cat]
+        else:
+            filtered_tickers = available_tickers
+            
+        filtered_tickers.sort()
+        
+        ticker = col1.selectbox("Select Ticker", filtered_tickers)
         start_date = col2.date_input("Start Date", value=pd.to_datetime("2023-01-01"))
         end_date = col3.date_input("End Date", value=pd.to_datetime("today"))
         
         # Load defaults from global settings if available
         global_settings = st.session_state.get('trading_settings', {})
-        default_cap = float(global_settings.get('initial_capital', DEFAULT_INITIAL_CAPITAL))
-        default_comm = float(global_settings.get('commission_rate', DEFAULT_COMMISSION))
-        default_slip = float(global_settings.get('slippage', DEFAULT_SLIPPAGE))
-        default_min_comm = float(global_settings.get('min_commission', DEFAULT_MIN_COMMISSION))
+        default_cap = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+        default_comm = float(global_settings.get('commission_rate', settings.COMMISSION_RATE))
+        default_slip = float(global_settings.get('slippage', settings.SLIPPAGE))
+        default_min_comm = float(global_settings.get('min_commission', settings.MIN_COMMISSION))
         
         c1, c2, c3 = st.columns(3)
         initial_capital = c1.number_input("Initial Capital ($)", min_value=100.0, value=default_cap, step=100.0)
@@ -91,12 +103,12 @@ def render_strategy_creation_page(dm):
                 st.rerun()
         
         if preset_name == "MovingAverageStrategy":
-            preset_params['window'] = st.number_input("Window Size", min_value=1, value=DEFAULT_MA_WINDOW)
+            preset_params['window'] = st.number_input("Window Size", min_value=1, value=settings.DEFAULT_MA_WINDOW)
         elif preset_name == "RSIStrategy":
             c1, c2, c3 = st.columns(3)
-            preset_params['period'] = c1.number_input("RSI Period", min_value=1, value=DEFAULT_RSI_PERIOD)
-            preset_params['buy_threshold'] = c2.number_input("Buy Threshold", min_value=1, max_value=100, value=DEFAULT_RSI_BUY_THRESHOLD)
-            preset_params['sell_threshold'] = c3.number_input("Sell Threshold", min_value=1, max_value=100, value=DEFAULT_RSI_SELL_THRESHOLD)
+            preset_params['period'] = c1.number_input("RSI Period", min_value=1, value=settings.DEFAULT_RSI_PERIOD)
+            preset_params['buy_threshold'] = c2.number_input("Buy Threshold", min_value=1, max_value=100, value=settings.DEFAULT_RSI_BUY_THRESHOLD)
+            preset_params['sell_threshold'] = c3.number_input("Sell Threshold", min_value=1, max_value=100, value=settings.DEFAULT_RSI_SELL_THRESHOLD)
             
     elif mode == "AI Assistant":
         col_input, col_code = st.columns([1, 1])

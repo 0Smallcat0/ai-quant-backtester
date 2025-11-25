@@ -42,6 +42,7 @@ def mock_backtest_engine():
         instance = MockBE.return_value
         instance.trades = []
         instance.equity_curve = [{'date': '2023-01-01', 'equity': 10000}, {'date': '2023-01-02', 'equity': 10100}]
+        instance.initial_capital = 10000.0
         yield instance
 
 def test_cli_quotes_strip(mock_data_manager, mock_strategy_loader, mock_backtest_engine):

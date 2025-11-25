@@ -35,8 +35,9 @@ def test_date_slicing_covid_crash(mock_data):
     assert len(engine.equity_curve) > 0, "Equity curve should not be empty"
     
     # Check that the first and last dates in the equity curve are within the specified range
-    first_date = engine.equity_curve[0]["date"]
-    last_date = engine.equity_curve[-1]["date"]
+    # Check that the first and last dates in the equity curve are within the specified range
+    first_date = engine.equity_curve.iloc[0]["date"]
+    last_date = engine.equity_curve.iloc[-1]["date"]
     
     assert first_date >= pd.Timestamp(start_date), f"First date {first_date} should be >= {start_date}"
     assert last_date <= pd.Timestamp(end_date), f"Last date {last_date} should be <= {end_date}"
@@ -55,9 +56,9 @@ def test_date_slicing_start_only(mock_data):
     engine.run(mock_data, signals, start_date=start_date)
     
     assert len(engine.equity_curve) > 0
-    assert engine.equity_curve[0]["date"] >= pd.Timestamp(start_date)
+    assert engine.equity_curve.iloc[0]["date"] >= pd.Timestamp(start_date)
     # Should go to the end of the data
-    assert engine.equity_curve[-1]["date"] == mock_data.index[-1]
+    assert engine.equity_curve.iloc[-1]["date"] == mock_data.index[-1]
 
 def test_date_slicing_end_only(mock_data):
     """Verify slicing with only end_date."""
@@ -68,5 +69,5 @@ def test_date_slicing_end_only(mock_data):
     engine.run(mock_data, signals, end_date=end_date)
     
     assert len(engine.equity_curve) > 0
-    assert engine.equity_curve[0]["date"] == mock_data.index[0]
-    assert engine.equity_curve[-1]["date"] <= pd.Timestamp(end_date)
+    assert engine.equity_curve.iloc[0]["date"] == mock_data.index[0]
+    assert engine.equity_curve.iloc[-1]["date"] <= pd.Timestamp(end_date)

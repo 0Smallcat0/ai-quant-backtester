@@ -145,5 +145,5 @@ def test_bankruptcy_break(mock_price_data):
     # The engine now fills the remaining dates with 0 equity for robustness (charting).
     # So we expect the curve to have the same length as the input data (5 days).
     assert len(engine.equity_curve) == 5, f"Should fill remaining days with 0, got {len(engine.equity_curve)} days"
-    assert engine.equity_curve[-1]['equity'] == 0.0
-    assert engine.equity_curve[-2]['equity'] == 0.0
+    assert engine.equity_curve.iloc[-1]['equity'] == 0.0
+    assert engine.equity_curve.iloc[-2]['equity'] == 0.0

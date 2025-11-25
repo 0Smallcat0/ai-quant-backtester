@@ -122,22 +122,38 @@ def render_agent_chat_page(dm=None):
                 
                 with st.spinner("Thinking & Exploring Codebase..."):
                     try:
-                        # Call the agent
-                        response = st.session_state.agent_instance.chat(
+                        # Call the agent with streaming
+                        response_generator = st.session_state.agent_instance.chat(
                             prompt, 
-                            history=st.session_state.agent_messages
+                            history=st.session_state.agent_messages,
+                            stream=True
                         )
                         
-                        if isinstance(response, PendingAction):
+                        full_response = ""
+                        pending_action_obj = None
+                        
+                        # Streamlit's write_stream consumes the generator. 
+                        # But we need to intercept PendingAction.
+                        # So we iterate manually.
+                        
+                        for chunk in response_generator:
+                            if isinstance(chunk, PendingAction):
+                                pending_action_obj = chunk
+                                break
+                            
+                            full_response += str(chunk)
+                            message_placeholder.markdown(full_response + "▌")
+                            
+                        # Final render without cursor
+                        message_placeholder.markdown(full_response)
+                        
+                        if pending_action_obj:
                             # Store pending action and rerun to show UI
-                            st.session_state.pending_action = response
+                            st.session_state.pending_action = pending_action_obj
                             st.rerun()
                         else:
-                            # Display response
-                            message_placeholder.markdown(response)
-                            
                             # Add assistant response to chat history
-                            st.session_state.agent_messages.append({"role": "assistant", "content": response})
+                            st.session_state.agent_messages.append({"role": "assistant", "content": full_response})
                         
                     except Exception as e:
                         error_msg = f"An error occurred: {str(e)}"

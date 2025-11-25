@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from src.backtest_engine import BacktestEngine
-from src.config.settings import DEFAULT_MIN_COMMISSION
+from src.config.settings import settings
 
 class TestGhostTrades:
     def setup_method(self):
@@ -28,13 +28,9 @@ class TestGhostTrades:
         Assert: Equity drops by exactly 2 * MIN_COMMISSION (entry + exit).
         """
         # Create a signal that buys 1 share on day 1 and sells on day 5
-        # Note: In Target-Delta logic, signal is target exposure.
-        # To buy 1 share at price 100, target exposure is roughly 100 / 10000 = 0.01 (assuming 10k capital)
-        # But let's force a specific small signal.
-        
         signals = pd.Series([0.0] * 10, index=self.data.index)
         # Day 0 signal -> Day 1 execution
-        signals.iloc[0] = 0.01  # Target 1% exposure (approx 1 share if capital=10000, price=100)
+        signals.iloc[0] = 0.01  # Target 1% exposure
         signals.iloc[4] = 0.0   # Close position
         
         strategy = self.mock_strategy_class()
@@ -45,19 +41,14 @@ class TestGhostTrades:
         engine = BacktestEngine(initial_capital=10000.0, min_commission=test_min_comm, slippage=0.0)
         
         # Run backtest
-        # engine.run expects signals as a Series, not a strategy object
         engine.run(self.data, signals)
         
         # Check trades
         trades = engine.trades
         assert len(trades) >= 2, "Should have at least entry and exit trades"
         
-        # Calculate expected commission cost
-        # If MIN_COMMISSION is 5.0, then 2 trades = $10.0 loss
-        # Price didn't change, so PnL from price action is 0.
-        
-        initial_equity = engine.equity_curve[0]['equity']
-        final_equity = engine.equity_curve[-1]['equity']
+        initial_equity = engine.equity_curve.iloc[0]['equity']
+        final_equity = engine.equity_curve.iloc[-1]['equity']
         
         # We expect loss solely due to commission
         expected_loss = len(trades) * test_min_comm
@@ -82,16 +73,10 @@ class TestGhostTrades:
         strategy = self.mock_strategy_class()
         strategy.generate_signals = lambda df: signals
         
-        engine = BacktestEngine(initial_capital=10000.0)
+        engine = BacktestEngine(initial_capital=settings.INITIAL_CAPITAL)
         engine.run(self.data, signals)
         
         trades = engine.trades
         
-        # Ideally, we want to assert that NO trades happen if we implement the fix.
-        # But for "Diagnose" phase, we might expect trades to happen if the fix isn't there yet.
-        # The user request says: "Assert: System can identify and warn..." 
-        # But for the unit test of the FIX, we want to assert 0 trades.
-        
-        # Let's write the test expecting the FIX (TDD).
-        # So we expect 0 trades for this tiny signal.
+        # Expect 0 trades for this tiny signal.
         assert len(trades) == 0, f"Tiny signal {signals.iloc[0]} should be filtered out, but got {len(trades)} trades."

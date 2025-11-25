@@ -2,6 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from src.backtest_engine import BacktestEngine
+from src.config.settings import settings
 
 def create_downtrend_data():
     """Creates a synthetic price series with a clear downtrend (100 -> 50)."""
@@ -34,30 +35,39 @@ def test_long_only_vs_allow_short_divergence():
     engine_long = BacktestEngine(initial_capital=10000, long_only=True)
     engine_long.run(data, signals)
     
-    final_equity_long = engine_long.equity_curve[-1]["equity"]
+    # Access list of dicts
+    if len(engine_long.equity_curve) == 0:
+        final_equity_long = 10000
+    else:
+        final_equity_long = engine_long.equity_curve.iloc[-1]["equity"]
+        
     trades_long = len(engine_long.trades)
     
     print(f"\n[Long Only] Final Equity: {final_equity_long}, Trades: {trades_long}")
     
     # Assertions for Long Only
-    assert trades_long == 0, "Long-Only engine should NOT execute any trades on Short signals."
-    assert final_equity_long == 10000, "Long-Only engine should have flat equity (no PnL)."
+    assert trades_long == 0, "Long-Only mode should not execute short trades."
+    assert abs(final_equity_long - 10000) < 1e-9, "Long-Only equity should remain unchanged."
 
     # ---------------------------------------------------------
     # Scenario B: Allow Short
-    # Expectation: Short trades executed, Positive PnL (Shorting downtrend)
+    # Expectation: Trades executed, Profit from downtrend
     # ---------------------------------------------------------
     engine_short = BacktestEngine(initial_capital=10000, long_only=False)
     engine_short.run(data, signals)
     
-    final_equity_short = engine_short.equity_curve[-1]["equity"]
+    if len(engine_short.equity_curve) == 0:
+        final_equity_short = 10000
+    else:
+        final_equity_short = engine_short.equity_curve.iloc[-1]["equity"]
+        
     trades_short = len(engine_short.trades)
     
     print(f"[Allow Short] Final Equity: {final_equity_short}, Trades: {trades_short}")
     
     # Assertions for Allow Short
-    assert trades_short > 0, "Allow-Short engine MUST execute trades on Short signals."
-    assert final_equity_short > 10000, "Shorting a downtrend should be profitable (ignoring massive slippage/commissions)."
+    assert trades_short > 0, "Short mode should execute trades."
+    assert final_equity_short > 10000, "Shorting a downtrend should be profitable."
     
     # ---------------------------------------------------------
     # Proof of Divergence

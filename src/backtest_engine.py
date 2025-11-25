@@ -3,10 +3,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 import math
 import numpy as np
-from src.config.settings import (
-    DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE, 
-    DEFAULT_MIN_COMMISSION, EPSILON
-)
+from src.config.settings import settings
 
 @dataclass
 class Order:
@@ -29,7 +26,7 @@ class BacktestEngine:
     Simulates the execution of a trading strategy on historical data, accounting for
     transaction costs (commission, slippage) and position sizing rules.
     """
-    def __init__(self, initial_capital: float = DEFAULT_INITIAL_CAPITAL, commission_rate: float = DEFAULT_COMMISSION, slippage: float = DEFAULT_SLIPPAGE, min_commission: float = DEFAULT_MIN_COMMISSION, long_only: bool = False):
+    def __init__(self, initial_capital: float = settings.INITIAL_CAPITAL, commission_rate: float = settings.COMMISSION_RATE, slippage: float = settings.SLIPPAGE, min_commission: float = settings.MIN_COMMISSION, long_only: bool = False):
         """
         Initializes the BacktestEngine.
 
@@ -48,7 +45,8 @@ class BacktestEngine:
         self.long_only = long_only
         
         self.trades: List[Trade] = []
-        self.equity_curve: List[Dict[str, Any]] = []
+        self._equity_list: List[Dict[str, Any]] = []
+        self.equity_curve: pd.DataFrame = pd.DataFrame()
         self.pending_order: Optional[Order] = None
         self.position = 0.0
         
@@ -92,7 +90,8 @@ class BacktestEngine:
         self.current_capital = self.initial_capital
         self.position = 0.0
         self.trades = []
-        self.equity_curve = []
+        self._equity_list = []
+        self.equity_curve = pd.DataFrame()
         self.pending_order = None
         
         # [ROBUSTNESS] 1. Input Data Validation & Normalization
@@ -131,16 +130,28 @@ class BacktestEngine:
         if np.isinf(combined.select_dtypes(include=np.number)).values.any():
             raise ValueError("Input data contains Infinite values. Please clean data before backtesting.")
 
-        for date, row in combined.iterrows():
+        # [OPTIMIZATION] Pre-fetch arrays to avoid .iloc overhead inside loop
+        dates = combined.index.values
+        opens = combined['open'].values
+        highs = combined['high'].values
+        lows = combined['low'].values
+        closes = combined['close'].values
+        signals_arr = combined['signal'].values
+        
+        # Pre-calculate length
+        n_candles = len(dates)
+        
+        for i in range(n_candles):
             # ---------------------------------------------------
             # 1. Signal Processing & Target Calculation (Based on Shifted Signal)
             # ---------------------------------------------------
             # Since signals are shifted by 1, row['signal'] represents the signal from Yesterday (Close).
             # We use this to determine the Target Position for Today (Open).
             
-            signal = row["signal"]
-            current_close = float(row["close"])
-            current_open = float(row["open"])
+            date = dates[i]
+            signal = signals_arr[i]
+            current_close = float(closes[i])
+            current_open = float(opens[i])
             
             # Calculate Current Equity (at Open) for sizing
             # Note: We use Open price for sizing because we are trading at Open
@@ -158,10 +169,10 @@ class BacktestEngine:
             if current_open > 0:
                 if self.position_sizing_method == "fixed_amount":
                     target_exposure = float(self.position_sizing_target) * signal
-                    target_qty = target_exposure / (current_open + EPSILON)
+                    target_qty = target_exposure / (current_open + settings.EPSILON)
                 else: # fixed_percent
                     target_exposure = current_equity_open * float(self.position_sizing_target) * signal
-                    target_qty = target_exposure / (current_open + EPSILON)
+                    target_qty = target_exposure / (current_open + settings.EPSILON)
             
             # [FIX] Minimum Exposure Filter
             # Prevent ghost positions by ensuring target value is at least 0.1% of equity
@@ -182,7 +193,7 @@ class BacktestEngine:
             # ---------------------------------------------------
             # 2. Execution (Market On Open)
             # ---------------------------------------------------
-            if abs(delta_qty) > EPSILON:
+            if abs(delta_qty) > settings.EPSILON:
                 order_type = "BUY" if delta_qty > 0 else "SELL"
                 quantity = abs(delta_qty)
                 
@@ -197,7 +208,7 @@ class BacktestEngine:
                 if order_type == "BUY":
                     # Bankruptcy/Cash Protection
                     denom_rate = execution_price * (1 + self.commission_rate)
-                    if denom_rate > EPSILON:
+                    if denom_rate > settings.EPSILON:
                         max_qty_by_cash = math.floor(self.current_capital / denom_rate)
                     else:
                         max_qty_by_cash = 0.0
@@ -208,7 +219,7 @@ class BacktestEngine:
                     commission = max(trade_value * self.commission_rate, self.min_commission)
                     total_cost = trade_value + commission
                     
-                    if self.current_capital >= total_cost - EPSILON and quantity > EPSILON:
+                    if self.current_capital >= total_cost - settings.EPSILON and quantity > settings.EPSILON:
                         self.current_capital -= total_cost
                         self.position += quantity
                         trade_executed = True
@@ -218,7 +229,7 @@ class BacktestEngine:
                     if self.long_only:
                         quantity = min(quantity, self.position)
                     
-                    if quantity > EPSILON:
+                    if quantity > settings.EPSILON:
                         trade_value = quantity * execution_price
                         commission = max(trade_value * self.commission_rate, self.min_commission)
                         net_revenue = trade_value - commission
@@ -227,7 +238,7 @@ class BacktestEngine:
                         self.position -= quantity
                         
                         # Fix floating point drift
-                        if abs(self.position) < EPSILON:
+                        if abs(self.position) < settings.EPSILON:
                             self.position = 0.0
                         
                         trade_executed = True
@@ -249,13 +260,13 @@ class BacktestEngine:
             
             # Bankruptcy Check
             if current_equity_close <= 0:
-                self.equity_curve.append({
+                self._equity_list.append({
                     "date": date, "equity": 0.0, "cash": 0.0, "position_value": 0.0
                 })
-                remaining_dates = combined.index[combined.index > date]
-                for d in remaining_dates:
-                    self.equity_curve.append({
-                        "date": d, "equity": 0.0, "cash": 0.0, "position_value": 0.0
+                # Fill remaining dates with 0
+                for j in range(i + 1, n_candles):
+                    self._equity_list.append({
+                        "date": dates[j], "equity": 0.0, "cash": 0.0, "position_value": 0.0
                     })
                 print(f"Bankruptcy detected at {date}. Stopping backtest.")
                 break
@@ -266,9 +277,12 @@ class BacktestEngine:
             position_value = self.position * current_close
             equity = self.current_capital + position_value
             
-            self.equity_curve.append({
+            self._equity_list.append({
                 "date": date, 
                 "equity": equity,
                 "cash": self.current_capital,
                 "position_value": position_value
             })
+            
+        # [OPTIMIZATION] Convert list to DataFrame at the end
+        self.equity_curve = pd.DataFrame(self._equity_list)

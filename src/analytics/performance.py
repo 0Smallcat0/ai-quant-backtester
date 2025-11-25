@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 
+from src.config.settings import settings
+
 def calculate_cagr(start_value: float, end_value: float, years: float) -> float:
     """
     Calculate CAGR (Compound Annual Growth Rate).
@@ -29,7 +31,7 @@ def calculate_max_drawdown(equity_curve: pd.Series) -> float:
     drawdown = (equity_curve - cummax) / cummax
     return drawdown.min()
 
-def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.02) -> float:
+def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = settings.RISK_FREE_RATE) -> float:
     """
     Calculate Sharpe Ratio.
     (Daily_Returns.mean() - Risk_Free_Rate_Daily) / Daily_Returns.std() * sqrt(252)

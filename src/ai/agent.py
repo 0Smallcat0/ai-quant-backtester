@@ -87,19 +87,31 @@ class Agent:
             traceback.print_exc()
             return f"Error executing tool {tool_name}: {str(e)}"
 
-    def chat(self, user_input: str, history: List[Dict] = None, max_steps: int = 10) -> Union[str, PendingAction]:
+    def chat(self, user_input: str, history: List[Dict] = None, max_steps: int = 10, stream: bool = False) -> Union[str, PendingAction]:
         """
         Main chat loop (ReAct pattern).
-        1. Append user input to history.
-        2. Loop until max_steps or no tool called.
-        3. Return final response or PendingAction.
+        If stream=True, returns a generator.
+        If stream=False, returns the final string response or PendingAction.
         """
+        generator = self._chat_generator(user_input, history, max_steps, stream)
+        
+        if stream:
+            return generator
+            
+        # Blocking mode: consume generator
+        final_result = ""
+        for item in generator:
+            if isinstance(item, PendingAction):
+                return item
+            final_result = item
+            
+        return final_result
+
+    def _chat_generator(self, user_input: str, history: List[Dict], max_steps: int, stream: bool):
         if history is None:
             history = []
             
         # Prepare messages for LLM
-        # We don't modify the external history list in place to avoid side effects, 
-        # or we can, depending on design. Here we build a local context.
         messages = [{"role": "system", "content": self.system_prompt}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_input})
@@ -109,7 +121,21 @@ class Agent:
         
         while step < max_steps:
             # Call LLM
-            response = self.llm_client.get_completion(messages)
+            if stream:
+                # Streaming Logic
+                full_response = ""
+                stream_gen = self.llm_client.get_response_stream(messages)
+                
+                # Yield chunks to UI
+                for chunk in stream_gen:
+                    full_response += chunk
+                    yield chunk
+                
+                response = full_response
+            else:
+                # Standard Logic
+                response = self.llm_client.get_completion(messages)
+            
             last_response = response
             
             # Check for tool call
@@ -118,22 +144,17 @@ class Agent:
             if tool_name:
                 # Check for Sensitive Tools (Interrupt Logic)
                 if tool_name in self.SENSITIVE_TOOLS:
-                    # Do not execute. Return PendingAction.
-                    # We also append the thought to history so the context is preserved
-                    # But we don't append the tool output yet.
-                    # Note: The caller is responsible for handling the PendingAction 
-                    # and resuming the chat with the tool result (or rejection).
-                    
                     # Extract thought from response (everything before <tool>)
                     thought = response.split('<tool')[0].strip()
                     if thought.startswith("Thought:"):
                         thought = thought[len("Thought:"):].strip()
                         
-                    return PendingAction(
+                    yield PendingAction(
                         tool_name=tool_name,
                         args=tool_args,
                         thought=thought
                     )
+                    return # Stop generator
 
                 # Safe Tool found, execute it
                 tool_result = self._run_tool(tool_name, tool_args)
@@ -142,9 +163,16 @@ class Agent:
                 messages.append({"role": "assistant", "content": response})
                 messages.append({"role": "user", "content": f"Tool Output:\n{tool_result}"})
                 
+                # If streaming, yield tool output
+                if stream:
+                    yield f"\n\n**Tool Output:**\n{tool_result}\n\n"
+                
                 step += 1
             else:
                 # No tool called, this is the final answer
-                return response
+                if not stream:
+                    yield response
+                return # End generator
                 
-        return last_response
+        if not stream:
+            yield last_response

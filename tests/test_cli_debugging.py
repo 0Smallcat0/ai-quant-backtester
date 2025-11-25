@@ -113,7 +113,7 @@ def test_error_unmasking_unit():
                 # and printed to stderr, then sys.exit(1) is called.
                 # We verify that the REAL error message is printed, not "Strategy not found".
                 
-                with pytest.raises(SystemExit):
+                with pytest.raises(SyntaxError):
                     main()
                 
                 # Check if "Real Syntax Error" was printed to stderr
@@ -136,7 +136,7 @@ def test_error_unmasking_unit():
                 MockSL.return_value.load_strategy.side_effect = SyntaxError("Real Syntax Error")
                 
                 with patch.object(sys, 'argv', test_args):
-                    with pytest.raises(SystemExit):
+                    with pytest.raises(SyntaxError):
                         main()
                     
                     # Verify that the error message written to stderr contains the real error

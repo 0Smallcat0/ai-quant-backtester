@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from src.backtest_engine import BacktestEngine
-from src.config.settings import DEFAULT_INITIAL_CAPITAL
+from src.config.settings import settings
 
 class TestConfigSensitivity:
     def test_slippage_sensitivity(self):
@@ -27,15 +27,12 @@ class TestConfigSensitivity:
         # Run with Zero Slippage
         engine_zero = BacktestEngine(initial_capital=10000, slippage=0.0, commission_rate=0.0)
         engine_zero.run(data, signals)
-        equity_zero = engine_zero.equity_curve[-1]['equity']
+        equity_zero = engine_zero.equity_curve.iloc[-1]['equity']
         
         # Run with Huge Slippage (50%)
-        # Buy at 102 (Open of index 2 due to lag), Price = 102 * 1.5 = 153
-        # Sell at 104 (Open of index 6 due to lag), Price = 104 * 0.5 = 52
-        # Loss should be massive
         engine_huge = BacktestEngine(initial_capital=10000, slippage=0.5, commission_rate=0.0)
         engine_huge.run(data, signals)
-        equity_huge = engine_huge.equity_curve[-1]['equity']
+        equity_huge = engine_huge.equity_curve.iloc[-1]['equity']
         
         print(f"Equity Zero Slippage: {equity_zero}")
         print(f"Equity Huge Slippage: {equity_huge}")

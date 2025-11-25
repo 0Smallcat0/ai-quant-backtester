@@ -2,7 +2,7 @@ import streamlit as st
 from src.data_engine import DataManager
 
 
-from src.config.settings import DB_PATH, VERSION
+from src.config.settings import settings
 
 # Page Config
 st.set_page_config(
@@ -16,7 +16,7 @@ from src.ui.settings import render_global_settings_page
 # Initialize Components
 @st.cache_resource
 def get_data_manager():
-    dm = DataManager(db_path=str(DB_PATH))
+    dm = DataManager(db_path=str(settings.DB_PATH))
     dm.init_db()
     return dm
 
@@ -32,7 +32,7 @@ st.sidebar.markdown("---")
 
 # --- Page: Home ---
 if page == "Home":
-    st.title(f"🤖 AI-Driven Quantitative Backtesting Engine ({VERSION})")
+    st.title(f"🤖 AI-Driven Quantitative Backtesting Engine ({settings.VERSION})")
     st.markdown("""
     Welcome to the **AI Quant Engine**. This platform allows you to:
     
@@ -48,7 +48,7 @@ if page == "Home":
     with col1:
         st.subheader("📊 System Status")
         st.success("System Online")
-        st.write(f"**Database Path:** `{DB_PATH}`")
+        st.write(f"**Database Path:** `{settings.DB_PATH}`")
         
     with col2:
         st.subheader("🚀 Quick Start")

@@ -57,8 +57,8 @@ def test_bankruptcy_curve_filling():
     
     # Check last 5 days are 0
     for i in range(5, 10):
-        assert curve[i]["equity"] <= 1e-7, f"Equity at index {i} should be 0, got {curve[i]['equity']}"
-        assert curve[i]["cash"] <= 1e-7, f"Cash at index {i} should be 0, got {curve[i]['cash']}"
+        assert curve.iloc[i]["equity"] <= 1e-7, f"Equity at index {i} should be 0, got {curve.iloc[i]['equity']}"
+        assert curve.iloc[i]["cash"] <= 1e-7, f"Cash at index {i} should be 0, got {curve.iloc[i]['cash']}"
 
 def test_oversell_protection(mock_data):
     """

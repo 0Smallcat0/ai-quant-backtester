@@ -61,7 +61,7 @@ def test_run_strategy_success(setup_data):
     cmd = [
         sys.executable,
         CLI_SCRIPT,
-        "--strategy_name", "MA_Crossover",
+        "--strategy_name", "MovingAverageStrategy",
         "--ticker", "BTC-USD",
         "--start", "2020-01-01",
         "--end", "2020-04-01",
@@ -82,9 +82,9 @@ def test_run_strategy_success(setup_data):
     # Check if output is valid JSON
     try:
         output_data = json.loads(result.stdout)
-        assert "CAGR" in output_data
-        assert "Max Drawdown" in output_data
-        assert "Total Return" in output_data
+        assert "cagr" in output_data
+        assert "max_drawdown" in output_data
+        assert "total_return" in output_data
     except json.JSONDecodeError:
         pytest.fail(f"Output was not valid JSON: {result.stdout}")
 
@@ -105,7 +105,8 @@ def test_run_strategy_invalid():
     result = subprocess.run(cmd, capture_output=True, text=True)
     
     assert result.returncode != 0, "Script should have failed for invalid strategy"
-    assert "Strategy not found" in result.stderr or "Strategy not found" in result.stdout
+    assert result.returncode != 0, "Script should have failed for invalid strategy"
+    assert "StrategyLoadError" in result.stderr or "not found" in result.stderr
 
 def test_run_strategy_no_json_flag(setup_data):
     """
@@ -117,7 +118,7 @@ def test_run_strategy_no_json_flag(setup_data):
     cmd = [
         sys.executable,
         CLI_SCRIPT,
-        "--strategy_name", "MA_Crossover",
+        "--strategy_name", "MovingAverageStrategy",
         "--ticker", "BTC-USD",
         "--start", "2020-01-01",
         "--end", "2020-02-01"
@@ -126,5 +127,5 @@ def test_run_strategy_no_json_flag(setup_data):
     result = subprocess.run(cmd, capture_output=True, text=True)
     
     assert result.returncode == 0
-    assert "CAGR" in result.stdout
-    assert "Max Drawdown" in result.stdout
+    assert "cagr" in result.stdout
+    assert "max_drawdown" in result.stdout

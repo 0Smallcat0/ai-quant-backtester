@@ -1,6 +1,9 @@
 import os
 import subprocess
 
+from functools import lru_cache
+
+@lru_cache(maxsize=10)
 def list_files(start_path: str = ".") -> str:
     """
     List files in a directory recursively, returning a tree structure string.
@@ -50,6 +53,7 @@ def _validate_path(file_path: str) -> bool:
         
     return common == root_dir
 
+@lru_cache(maxsize=100)
 def read_file(file_path: str, max_lines: int = 5000) -> str:
     """
     Read a file safely.
@@ -95,6 +99,7 @@ def write_file(file_path: str, content: str) -> str:
     Write content to a file safely.
     - Enforces that file is within the current working directory.
     - Overwrites existing files.
+    - Clears read_file and list_files cache to ensure consistency.
     """
     if not _validate_path(file_path):
         return "Error: Access Denied - Path traversal detected."
@@ -107,6 +112,11 @@ def write_file(file_path: str, content: str) -> str:
         
         with open(abs_path, 'w', encoding='utf-8') as f:
             f.write(content)
+            
+        # Clear caches
+        read_file.cache_clear()
+        list_files.cache_clear()
+        
         return f"Successfully wrote to {abs_path}"
     except Exception as e:
         return f"Error: Could not write to file. {str(e)}"

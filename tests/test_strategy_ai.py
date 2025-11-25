@@ -100,10 +100,14 @@ class TestStrategyAI(unittest.TestCase):
         if LLMClient is object:
             self.fail("src.ai.llm_client.LLMClient module not found")
             
+        from tenacity import RetryError
         with patch.dict(os.environ, {}, clear=True):
             client = LLMClient()
-            with self.assertRaises(ValueError):
+            try:
                 client.generate_strategy_code("test")
+                self.fail("Should have raised ValueError or RetryError")
+            except (ValueError, RetryError):
+                pass
 
 if __name__ == '__main__':
     unittest.main()

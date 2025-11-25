@@ -1,39 +1,39 @@
 import pandas as pd
+import numpy as np
 
 from src.strategies.base import Strategy
-from src.config.settings import (
-    DEFAULT_MA_WINDOW, DEFAULT_RSI_PERIOD, 
-    DEFAULT_RSI_BUY_THRESHOLD, DEFAULT_RSI_SELL_THRESHOLD
-)
+from src.config.settings import settings
 
 class MovingAverageStrategy(Strategy):
     """
     Simple Moving Average Trend Following Strategy.
     Buy when Close > MA, Sell when Close < MA.
     """
-    def __init__(self, window: int = DEFAULT_MA_WINDOW):
+    def __init__(self, window: int = settings.DEFAULT_MA_WINDOW):
+        super().__init__()
         self.window = window
 
     def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        df = data.copy()
+        self.data = data.copy()
         # Ensure lowercase columns
-        df.columns = [c.lower() for c in df.columns]
+        self.data.columns = [c.lower() for c in self.data.columns]
         
-        if 'close' not in df.columns:
+        if 'close' not in self.data.columns:
             raise ValueError("Data must contain a 'close' column.")
             
-        df['ma'] = df['close'].rolling(window=self.window).mean()
+        # Use safe_rolling for MA (excludes current candle)
+        self.data['ma'] = self.safe_rolling('close', self.window, 'mean')
         
-        df['signal'] = 0
+        self.data['signal'] = 0
         # Buy signal (Trend Up)
-        df.loc[df['close'] > df['ma'], 'signal'] = 1
+        self.data.loc[self.data['close'] > self.data['ma'], 'signal'] = 1
         # Sell signal (Trend Down)
-        df.loc[df['close'] < df['ma'], 'signal'] = -1
+        self.data.loc[self.data['close'] < self.data['ma'], 'signal'] = -1
         
         # Clean up NaN
-        df['signal'] = df['signal'].fillna(0)
+        self.data['signal'] = self.data['signal'].fillna(0)
         
-        return df
+        return self.data
 
 class RSIStrategy(Strategy):
     """
@@ -42,7 +42,8 @@ class RSIStrategy(Strategy):
     Buy when RSI < buy_threshold (oversold).
     Sell when RSI > sell_threshold (overbought).
     """
-    def __init__(self, period: int = DEFAULT_RSI_PERIOD, buy_threshold: int = DEFAULT_RSI_BUY_THRESHOLD, sell_threshold: int = DEFAULT_RSI_SELL_THRESHOLD):
+    def __init__(self, period: int = settings.DEFAULT_RSI_PERIOD, buy_threshold: int = settings.DEFAULT_RSI_BUY_THRESHOLD, sell_threshold: int = settings.DEFAULT_RSI_SELL_THRESHOLD):
+        super().__init__()
         self.period = period
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
@@ -64,23 +65,23 @@ class RSIStrategy(Strategy):
         return rsi
 
     def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        df = data.copy()
-        df.columns = [c.lower() for c in df.columns]
+        self.data = data.copy()
+        self.data.columns = [c.lower() for c in self.data.columns]
         
-        if 'close' not in df.columns:
+        if 'close' not in self.data.columns:
             raise ValueError("Data must contain a 'close' column.")
             
-        df['rsi'] = self._calculate_rsi(df['close'], self.period)
+        self.data['rsi'] = self._calculate_rsi(self.data['close'], self.period)
         
-        df['signal'] = 0
+        self.data['signal'] = 0
         # Buy (Oversold)
-        df.loc[df['rsi'] < self.buy_threshold, 'signal'] = 1
+        self.data.loc[self.data['rsi'] < self.buy_threshold, 'signal'] = 1
         # Sell (Overbought)
-        df.loc[df['rsi'] > self.sell_threshold, 'signal'] = -1
+        self.data.loc[self.data['rsi'] > self.sell_threshold, 'signal'] = -1
         
-        df['signal'] = df['signal'].fillna(0.0)
+        self.data['signal'] = self.data['signal'].fillna(0.0)
         
-        return df
+        return self.data
 
 class BollingerBreakoutStrategy(Strategy):
     """
@@ -89,33 +90,34 @@ class BollingerBreakoutStrategy(Strategy):
     Sell when Close falls below Moving Average (Center Line).
     """
     def __init__(self, window: int = 20, std_dev: float = 2.0):
+        super().__init__()
         self.window = window
         self.std_dev = std_dev
 
     def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        df = data.copy()
-        df.columns = [c.lower() for c in df.columns]
+        self.data = data.copy()
+        self.data.columns = [c.lower() for c in self.data.columns]
         
-        if 'close' not in df.columns:
+        if 'close' not in self.data.columns:
             raise ValueError("Data must contain a 'close' column.")
             
-        # Calculate Bands
-        df['ma'] = df['close'].rolling(window=self.window).mean()
-        df['std'] = df['close'].rolling(window=self.window).std()
-        df['upper'] = df['ma'] + (df['std'] * self.std_dev)
+        # Calculate Bands using safe_rolling
+        self.data['ma'] = self.safe_rolling('close', self.window, 'mean')
+        self.data['std'] = self.safe_rolling('close', self.window, 'std')
+        self.data['upper'] = self.data['ma'] + (self.data['std'] * self.std_dev)
 
         
-        df['signal'] = 0
+        self.data['signal'] = 0
         
         # Buy Signal: Breakout above Upper Band
-        df.loc[df['close'] > df['upper'], 'signal'] = 1
+        self.data.loc[self.data['close'] > self.data['upper'], 'signal'] = 1
         
         # Sell Signal: Trend reversal (Close below MA)
-        df.loc[df['close'] < df['ma'], 'signal'] = -1
+        self.data.loc[self.data['close'] < self.data['ma'], 'signal'] = -1
         
-        df['signal'] = df['signal'].fillna(0)
+        self.data['signal'] = self.data['signal'].fillna(0)
         
-        return df
+        return self.data
 
 PRESET_STRATEGIES = {
     "MovingAverageStrategy": MovingAverageStrategy,

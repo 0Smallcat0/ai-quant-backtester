@@ -2,10 +2,7 @@ import streamlit as st
 import os
 import json
 from dotenv import load_dotenv, set_key
-from src.config.settings import (
-    DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE, 
-    DEFAULT_MIN_COMMISSION
-)
+from src.config.settings import settings
 
 # Load existing environment variables
 load_dotenv()
@@ -148,10 +145,10 @@ def render_global_settings_page(dm):
     current_settings = st.session_state.get('trading_settings', {})
     
     # Defaults from SSOT if not in session state
-    def_cap = float(current_settings.get('initial_capital', DEFAULT_INITIAL_CAPITAL))
-    def_comm = float(current_settings.get('commission_rate', DEFAULT_COMMISSION))
-    def_slip = float(current_settings.get('slippage', DEFAULT_SLIPPAGE))
-    def_min_comm = float(current_settings.get('min_commission', DEFAULT_MIN_COMMISSION))
+    def_cap = float(current_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+    def_comm = float(current_settings.get('commission_rate', settings.COMMISSION_RATE))
+    def_slip = float(current_settings.get('slippage', settings.SLIPPAGE))
+    def_min_comm = float(current_settings.get('min_commission', settings.MIN_COMMISSION))
     
     st.subheader("💰 Capital & Costs")
     c_cap, c_comm = st.columns(2)

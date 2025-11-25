@@ -6,6 +6,9 @@ import yfinance as yf
 from datetime import datetime
 import time
 from typing import Optional, List, Callable, Any
+from typing import Optional, List, Callable, Any
+from src.utils import sanitize_ticker
+from src.config.settings import settings
 
 class DataManager:
     def __init__(self, db_path: str):
@@ -19,6 +22,11 @@ class DataManager:
         """Initialize the SQLite database with required tables."""
         print(f"Initializing DB at {self.db_path}")
         conn = self.get_connection()
+        
+        # [OPTIMIZATION] Enable WAL mode and synchronous=NORMAL for performance
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        
         cursor = conn.cursor()
         
         # OHLCV Data Table
@@ -62,7 +70,7 @@ class DataManager:
         """
         try:
             # [FIX] Sanitize ticker
-            ticker = ticker.strip().strip("'").strip('"').upper()
+            ticker = sanitize_ticker(ticker)
             
             # Check if it's a Taiwan stock (numeric, 4 digits)
             if ticker.isdigit() and len(ticker) == 4:
@@ -114,7 +122,7 @@ class DataManager:
         today = datetime.now().strftime('%Y-%m-%d')
         
         if not row:
-            return "2000-01-01"
+            return settings.DEFAULT_START_DATE
             
         last_updated = row[0]
         
@@ -138,7 +146,7 @@ class DataManager:
         """
         # Default to a reasonable start date if not provided
         if not start_date:
-            start_date = "2020-01-01"
+            start_date = settings.DEFAULT_START_DATE
         
         if not end_date:
             end_date = datetime.now().strftime('%Y-%m-%d')
@@ -170,18 +178,29 @@ class DataManager:
             if progress_callback:
                 progress_callback(i / total_years, f"Downloading {ticker} data for {year}...")
 
-            try:
-                # [FIX] Disable auto_adjust for Taiwan stocks to prevent zero volume bug
-                # yfinance has a known issue with auto_adjust=True for .TW/.TWO ETFs (like 0056)
-                use_auto_adjust = True
-                if ticker.endswith('.TW') or ticker.endswith('.TWO'):
-                    use_auto_adjust = False
-                
-                df_chunk = yf.download(ticker, start=chunk_start, end=chunk_end, progress=False, multi_level_index=False, auto_adjust=use_auto_adjust)
-                if not df_chunk.empty:
-                    all_dfs.append(df_chunk)
-            except Exception as e:
-                print(f"Error fetching {year} for {ticker}: {e}")
+            # Retry logic for yfinance download
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    # [FIX] Disable auto_adjust for Taiwan stocks to prevent zero volume bug
+                    # yfinance has a known issue with auto_adjust=True for .TW/.TWO ETFs (like 0056)
+                    use_auto_adjust = True
+                    if ticker.endswith('.TW') or ticker.endswith('.TWO'):
+                        use_auto_adjust = False
+                    
+                    df_chunk = yf.download(ticker, start=chunk_start, end=chunk_end, progress=False, multi_level_index=False, auto_adjust=use_auto_adjust)
+                    
+                    if not df_chunk.empty:
+                        all_dfs.append(df_chunk)
+                    break # Success, exit retry loop
+                    
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        sleep_time = 2 ** attempt
+                        print(f"Error fetching {year} for {ticker}: {e}. Retrying in {sleep_time}s...")
+                        time.sleep(sleep_time)
+                    else:
+                        print(f"Failed to fetch {year} for {ticker} after {max_retries} attempts: {e}")
 
         if progress_callback:
             progress_callback(1.0, f"Finalizing {ticker} data...")
@@ -243,11 +262,57 @@ class DataManager:
         conn.commit()
         conn.close()
 
+    def save_data(self, df: pd.DataFrame, ticker: str) -> None:
+        """
+        Save OHLCV data to database.
+        Expects DataFrame with columns: open, high, low, close, volume.
+        Index should be date.
+        """
+        if df.empty:
+            return
+
+        # Ensure index is date
+        if 'date' not in df.columns and isinstance(df.index, pd.DatetimeIndex):
+            df = df.reset_index()
+            df.rename(columns={'index': 'date'}, inplace=True)
+            
+        # Normalize columns
+        df.columns = [str(c).lower() for c in df.columns]
+        
+        data_tuples = []
+        for _, row in df.iterrows():
+            try:
+                date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
+                data_tuples.append((
+                    ticker, date_str, row['open'], row['high'], 
+                    row['low'], row['close'], row['volume']
+                ))
+            except KeyError as e:
+                continue
+                
+        conn = self.get_connection()
+        try:
+            with conn:
+                cursor = conn.cursor()
+                cursor.executemany('''
+                    INSERT OR REPLACE INTO ohlcv (ticker, date, open, high, low, close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', data_tuples)
+                
+                # Update Metadata
+                today = datetime.now().strftime('%Y-%m-%d')
+                cursor.execute('''
+                    INSERT OR REPLACE INTO metadata (ticker, last_updated)
+                    VALUES (?, ?)
+                ''', (ticker, today))
+        finally:
+            conn.close()
+
 
     def get_data(self, ticker: str) -> pd.DataFrame:
         """Load data from DB for a specific ticker."""
         # [FIX] Sanitize ticker
-        ticker = ticker.strip().strip("'").strip('"').upper()
+        ticker = sanitize_ticker(ticker)
         conn = self.get_connection()
         try:
             # Use parameterized query for safety, though ticker is internal
@@ -311,7 +376,7 @@ class DataManager:
         if not symbol or not symbol.strip():
             raise ValueError("Ticker symbol cannot be empty.")
         # [FIX] Sanitize symbol
-        symbol = symbol.strip().strip("'").strip('"').upper()
+        symbol = sanitize_ticker(symbol)
         
         conn = self.get_connection()
         cursor = conn.cursor()

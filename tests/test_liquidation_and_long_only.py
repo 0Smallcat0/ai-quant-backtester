@@ -73,7 +73,7 @@ class TestLiquidationAndLongOnly(unittest.TestCase):
         self.assertEqual(len(engine.trades), 0, "Should not execute short trades in long_only mode")
         
         # Equity should remain initial capital (flat)
-        final_equity = engine.equity_curve[-1]['equity']
+        final_equity = engine.equity_curve.iloc[-1]['equity']
         self.assertEqual(final_equity, 10000, "Equity should not change if no trades are made")
 
     def test_short_allowed_when_disabled(self):
