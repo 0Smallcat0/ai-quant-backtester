@@ -1,4 +1,4 @@
-# AI-Driven Quantitative Backtesting Engine (v1.1.0)
+# AI-Driven Quantitative Backtesting Engine (v1.0.0)
 
 A professional-grade, event-driven backtesting engine designed for AI-generated trading strategies. It features strict financial realism, anti-lookahead architecture, and a modern Streamlit UI.
 
