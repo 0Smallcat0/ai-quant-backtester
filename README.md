@@ -1,64 +1,89 @@
-# AI-Driven Quantitative Backtesting Engine
+# AI-Driven Quantitative Backtesting Engine (v1.1.0)
 
-![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)
+A professional-grade, event-driven backtesting engine designed for AI-generated trading strategies. It features strict financial realism, anti-lookahead architecture, and a modern Streamlit UI.
 
-## Introduction
+## 🔥 New Features in v1.1 (Stable)
 
-The **AI-Driven Quantitative Backtesting Engine** is a professional-grade research platform designed to bridge the gap between **Large Language Model (LLM) intelligence** and **rigorous financial simulation**. 
-
-## 🔥 Key Features
-
-### 1. Financial Realism & Safety
-*   **Target-Delta Execution**: Eliminates "Infinite Leverage" bugs by calculating the exact delta required to reach a target portfolio percentage.
-*   **Strict Long-Only Mode**: Mathematically proven prevention of short selling in long-only portfolios.
-*   **Bankruptcy Protection**: Immediate simulation termination if equity hits zero, preventing unrealistic recovery from ruin.
-*   **T+1 Execution**: Signals generated on Day T (Close) are strictly executed on Day T+1 (Open) to prevent lookahead bias.
-
-### 2. AI-Assisted Strategy Development
-*   **Natural Language to Code**: Generate valid Python strategies using OpenAI/OpenRouter integration.
-*   **Anti-Lookahead Guard**: AI-generated code is sanitized with regex to block future data access (e.g., `shift(-1)`).
-*   **Atomic Write Protection**: Strategies are saved using atomic operations to prevent file corruption during edits.
-
-### 3. Advanced Analytics
-*   **Portfolio-Weighted Monte Carlo**: Simulates thousands of market scenarios using Log Scale returns for accurate long-term compounding projection.
-*   **Transaction Cost Simulation**: Configurable commission and slippage models.
-*   **Smart Metrics**: CAGR, Sharpe Ratio, Sortino Ratio, and Max Drawdown calculated on Portfolio Equity (not just trade capital).
+*   **CLI Automation**: Run backtests directly from the terminal using `python src/run_backtest.py`.
+*   **Dynamic Strategy Discovery**: Automatically detects and loads new strategy files in `src/strategies/`.
+*   **Anti-Lookahead Architecture**: Enforces strict T+1 execution lag to prevent future data leakage.
+*   **Realistic Execution**: Built-in Slippage, Commission models, and Bankruptcy protection.
+*   **Single Source of Truth (SSOT)**: Centralized configuration in `src/config/settings.py`.
 
 ## 🚀 Quick Start
 
-### Prerequisites
-*   Python 3.9+
-*   Git
+### 1. Installation
+```bash
+pip install -r requirements.txt
+```
 
-### Installation
+### 2. Run the UI
+```bash
+streamlit run app.py
+```
+Navigate to **Data Management** to fetch data (e.g., `BTC-USD`), then **Strategy & Backtest** to run simulations.
 
-1.  **Clone the Repository**
-    ```bash
-    git clone https://github.com/0Smallcat0/ai-quant-backtester.git
-    cd ai-quant-backtester
-    ```
+### 3. Run via CLI (Automation)
+```bash
+# Run a preset strategy
+python src/run_backtest.py --strategy_name MA_Crossover --ticker BTC-USD --start 2023-01-01
 
-2.  **Install Dependencies**
-    ```bash
-    pip install -r requirements.txt
-    ```
+# Run a custom strategy (must exist in src/strategies/)
+python src/run_backtest.py --strategy_name MyCustomStrategy --ticker ETH-USD
+```
 
-3.  **Configure Environment**
-    Copy the example environment file and add your API keys (OpenAI/OpenRouter).
-    ```bash
-    cp .env.example .env
-    ```
+## 📚 Developer Guide
 
-4.  **Run the Application**
-    ```bash
-    streamlit run app.py
-    ```
+### Writing a Strategy
+Create a new file in `src/strategies/` (e.g., `my_strategy.py`). Inherit from `Strategy` and implement `generate_signals`.
 
-## Development
+```python
+from src.strategies.base import Strategy
+import pandas as pd
 
-We follow a strict **Search Before Create** philosophy to maintain code hygiene.
+class MyStrategy(Strategy):
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        df = data.copy()
+        # Use safe_rolling helper if available, or standard pandas
+        df['ma'] = df['close'].rolling(20).mean()
+        
+        df['signal'] = 0
+        df.loc[df['close'] > df['ma'], 'signal'] = 1 # Long
+        
+        return df
+```
 
-*   **Read the Protocol**: Please review [CONTRIBUTING.md](CONTRIBUTING.md) before making changes.
-*   **Test-Driven Development (TDD)**: All new features must start with a failing test in `tests/`.
-*   **Code Style**: We prioritize readability and explicit variable names over clever one-liners.
+### Anti-Lookahead Rules
+1.  **T+1 Execution**: Signals generated on Day T (using Close price) are executed on Day T+1 (Open price).
+2.  **Forbidden Patterns**: The loader blocks code containing `.shift(-1)` or future slicing `iloc[i+1]`.
 
+### Stress Testing
+You can use the CLI to run stress tests by specifying different date ranges or tickers.
+```bash
+# Bull Market Stress Test
+python src/run_backtest.py --strategy_name RSI_Strategy --start 2020-01-01 --end 2021-01-01
+
+# Bear Market Stress Test
+python src/run_backtest.py --strategy_name RSI_Strategy --start 2022-01-01 --end 2023-01-01
+```
+
+## 📂 Project Structure
+```
+.
+├── app.py                  # Streamlit Entrypoint
+├── src/
+│   ├── backtest_engine.py  # Core Event-Driven Engine (T+1, Slippage)
+│   ├── data_engine.py      # SQLite Data Management
+│   ├── run_backtest.py     # CLI Entrypoint
+│   ├── config/
+│   │   └── settings.py     # SSOT Configuration
+│   ├── strategies/
+│   │   ├── base.py         # Abstract Base Class
+│   │   ├── loader.py       # Dynamic Loader & Security Validator
+│   │   └── presets.py      # Standard Strategies
+│   └── ui/                 # Streamlit Components
+└── tests/                  # Pytest Suite
+```
+
+## 🤝 Contributing
+Please read `CONTRIBUTING.md` before submitting changes. We follow strict TDD and Financial Realism protocols.

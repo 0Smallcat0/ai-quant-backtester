@@ -12,10 +12,10 @@ def plot_trading_chart(df: pd.DataFrame, trades: list) -> go.Figure:
     # Candlestick
     fig.add_trace(go.Candlestick(
         x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
         name='OHLC',
         increasing_line_color='#B0BEC5', # Light Gray for Up
         decreasing_line_color='#37474F'  # Dark Gray for Down
@@ -146,8 +146,8 @@ def plot_equity_curve(strategy_equity: pd.DataFrame, benchmark_equity: pd.DataFr
         if isinstance(benchmark_equity, pd.DataFrame):
             if 'equity' in benchmark_equity.columns:
                 bench_series = benchmark_equity['equity']
-            elif 'Close' in benchmark_equity.columns:
-                bench_series = benchmark_equity['Close']
+            elif 'close' in benchmark_equity.columns:
+                bench_series = benchmark_equity['close']
             else:
                 bench_series = benchmark_equity.iloc[:, 0]
         else:
@@ -289,10 +289,10 @@ def plot_price_history(df: pd.DataFrame, ticker: str) -> go.Figure:
     # 2. Add Candlestick Trace
     fig.add_trace(go.Candlestick(
         x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
+        open=df['open'],
+        high=df['high'],
+        low=df['low'],
+        close=df['close'],
         name=ticker
     ))
 

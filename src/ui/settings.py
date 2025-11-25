@@ -2,6 +2,10 @@ import streamlit as st
 import os
 import json
 from dotenv import load_dotenv, set_key
+from src.config.settings import (
+    DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE, 
+    DEFAULT_MIN_COMMISSION
+)
 
 # Load existing environment variables
 load_dotenv()
@@ -141,19 +145,31 @@ def render_global_settings_page(dm):
     st.header("⚙️ Trading Environment (Risk & Money)")
     
     # Load existing settings or defaults
-    current_settings = st.session_state.get('trading_settings', {
-        'sizing_method': 'Fixed Percentage (%)',
-        'sizing_target': 95.0,
-        'commission': 0.001
-    })
+    current_settings = st.session_state.get('trading_settings', {})
     
+    # Defaults from SSOT if not in session state
+    def_cap = float(current_settings.get('initial_capital', DEFAULT_INITIAL_CAPITAL))
+    def_comm = float(current_settings.get('commission_rate', DEFAULT_COMMISSION))
+    def_slip = float(current_settings.get('slippage', DEFAULT_SLIPPAGE))
+    def_min_comm = float(current_settings.get('min_commission', DEFAULT_MIN_COMMISSION))
+    
+    st.subheader("💰 Capital & Costs")
+    c_cap, c_comm = st.columns(2)
+    with c_cap:
+        initial_capital = st.number_input("Initial Capital ($)", min_value=100.0, value=def_cap, step=100.0)
+        min_commission = st.number_input("Min Commission ($)", min_value=0.0, value=def_min_comm, step=0.5)
+    with c_comm:
+        commission_rate = st.number_input("Commission Rate (0.001 = 0.1%)", min_value=0.0, value=def_comm, step=0.0001, format="%.4f")
+        slippage = st.number_input("Slippage (0.001 = 0.1%)", min_value=0.0, value=def_slip, step=0.0001, format="%.4f")
+
+    st.subheader("📐 Position Sizing")
     c1, c2 = st.columns(2)
     
     with c1:
         sizing_method = st.radio(
             "Position Sizing Type",
             ["Fixed Percentage (%)", "Fixed Amount ($)"],
-            index=0 if current_settings['sizing_method'] == 'Fixed Percentage (%)' else 1,
+            index=0 if current_settings.get('sizing_method', 'Fixed Percentage (%)') == 'Fixed Percentage (%)' else 1,
             help="Choose how to calculate trade size."
         )
         
@@ -175,28 +191,6 @@ def render_global_settings_page(dm):
                 step=100.0
             )
             
-    commission_rate = st.number_input(
-        "Commission Rate (e.g. 0.001 = 0.1%)",
-        value=float(current_settings.get('commission', 0.001)),
-        format="%.6f",
-        step=0.0001
-    )
-
-    slippage_rate = st.number_input(
-        "Slippage Rate (e.g. 0.001 = 0.1%)",
-        value=float(current_settings.get('slippage', 0.0)),
-        format="%.6f",
-        step=0.0001,
-        help="Simulated slippage per trade. Buy at Price * (1+slip), Sell at Price * (1-slip)."
-    )
-
-    min_commission = st.number_input(
-        "Minimum Commission per Trade ($)",
-        value=float(current_settings.get('min_commission', 0.0)),
-        step=0.5,
-        help="Minimum commission charged per trade, regardless of trade size."
-    )
-    
     # --- Save Action ---
     if st.button("Save Settings", type="primary"):
         # Update Session State
@@ -207,8 +201,9 @@ def render_global_settings_page(dm):
         st.session_state['trading_settings'] = {
             'sizing_method': sizing_method,
             'sizing_target': sizing_target,
-            'commission': commission_rate,
-            'slippage': slippage_rate,
+            'initial_capital': initial_capital,
+            'commission_rate': commission_rate,
+            'slippage': slippage,
             'min_commission': min_commission
         }
         

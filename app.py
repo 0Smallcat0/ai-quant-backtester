@@ -2,7 +2,7 @@ import streamlit as st
 from src.data_engine import DataManager
 
 
-from config.settings import DB_PATH
+from src.config.settings import DB_PATH, VERSION
 
 # Page Config
 st.set_page_config(
@@ -32,7 +32,7 @@ st.sidebar.markdown("---")
 
 # --- Page: Home ---
 if page == "Home":
-    st.title("🤖 AI-Driven Quantitative Backtesting Engine")
+    st.title(f"🤖 AI-Driven Quantitative Backtesting Engine ({VERSION})")
     st.markdown("""
     Welcome to the **AI Quant Engine**. This platform allows you to:
     

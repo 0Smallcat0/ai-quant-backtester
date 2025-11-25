@@ -6,8 +6,8 @@ from src.ai.prompts import SYSTEM_PROMPT
 from src.strategies.loader import StrategyLoader, StrategyLoadError
 from src.backtest_engine import BacktestEngine
 from src.strategies.manager import StrategyManager
-from config.settings import (
-    DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION_RATE, DEFAULT_SLIPPAGE_RATE, 
+from src.config.settings import (
+    DEFAULT_INITIAL_CAPITAL, DEFAULT_COMMISSION, DEFAULT_SLIPPAGE, 
     DEFAULT_MIN_COMMISSION, DEFAULT_RSI_PERIOD, DEFAULT_RSI_BUY_THRESHOLD,
     DEFAULT_RSI_SELL_THRESHOLD, DEFAULT_MA_WINDOW
 )
@@ -37,8 +37,21 @@ def render_strategy_creation_page(dm):
         start_date = col2.date_input("Start Date", value=pd.to_datetime("2023-01-01"))
         end_date = col3.date_input("End Date", value=pd.to_datetime("today"))
         
-        initial_capital = st.number_input("Initial Capital ($)", min_value=100.0, value=DEFAULT_INITIAL_CAPITAL, step=100.0)
-        long_only_mode = st.checkbox("Long Only (No Shorting)", value=True, help="If checked, the strategy will not take short positions.")
+        # Load defaults from global settings if available
+        global_settings = st.session_state.get('trading_settings', {})
+        default_cap = float(global_settings.get('initial_capital', DEFAULT_INITIAL_CAPITAL))
+        default_comm = float(global_settings.get('commission_rate', DEFAULT_COMMISSION))
+        default_slip = float(global_settings.get('slippage', DEFAULT_SLIPPAGE))
+        default_min_comm = float(global_settings.get('min_commission', DEFAULT_MIN_COMMISSION))
+        
+        c1, c2, c3 = st.columns(3)
+        initial_capital = c1.number_input("Initial Capital ($)", min_value=100.0, value=default_cap, step=100.0)
+        commission_rate = c2.number_input("Commission Rate (0.001 = 0.1%)", min_value=0.0, value=default_comm, step=0.0001, format="%.4f")
+        slippage = c3.number_input("Slippage (0.001 = 0.1%)", min_value=0.0, value=default_slip, step=0.0001, format="%.4f")
+        
+        c4, c5 = st.columns(2)
+        min_commission = c4.number_input("Min Commission ($)", min_value=0.0, value=default_min_comm, step=0.5)
+        long_only_mode = c5.checkbox("Long Only (No Shorting)", value=True, help="If checked, the strategy will not take short positions.")
 
     # --- 2. Strategy Definition ---
     st.subheader("🧠 Strategy Definition")
@@ -212,7 +225,7 @@ def render_strategy_creation_page(dm):
                         st.write(gaps)
 
                 # 2. Missing/Zero Value Check & Fix
-                cols_to_check = ['Open', 'High', 'Low', 'Close']
+                cols_to_check = ['open', 'high', 'low', 'close']
                 # Check if any 0 or NaN exists
                 has_zeros = (df[cols_to_check] == 0).any().any()
                 has_nans = df[cols_to_check].isna().any().any()
@@ -231,24 +244,16 @@ def render_strategy_creation_page(dm):
                 # -------------------------
 
                 # 3. Run Engine
-                # Load Global Settings
+                # Load Global Settings (Sizing only, others from UI)
                 trading_settings = st.session_state.get('trading_settings', {
                     'sizing_method': 'Fixed Percentage (%)',
-                    'sizing_target': 95.0,
-                    'sizing_target': 95.0,
-                    'commission': DEFAULT_COMMISSION_RATE,
-                    'slippage': DEFAULT_SLIPPAGE_RATE,
-                    'min_commission': DEFAULT_MIN_COMMISSION
+                    'sizing_target': 95.0
                 })
                 
-                commission_rate = trading_settings.get('commission', DEFAULT_COMMISSION_RATE)
-                slippage_rate = trading_settings.get('slippage', DEFAULT_SLIPPAGE_RATE)
-                min_commission = trading_settings.get('min_commission', DEFAULT_MIN_COMMISSION)
-
                 engine = BacktestEngine(
                     initial_capital=initial_capital, 
                     commission_rate=commission_rate, 
-                    slippage_rate=slippage_rate,
+                    slippage=slippage,
                     min_commission=min_commission,
                     long_only=long_only_mode
                 )
@@ -362,7 +367,7 @@ def render_strategy_creation_page(dm):
         
         # --- Benchmark Calculations ---
         # Benchmark Equity (Buy & Hold)
-        bench_series = results['df']['Close']
+        bench_series = results['df']['close']
         bench_start = bench_series.iloc[0]
         bench_end = bench_series.iloc[-1]
         
@@ -433,8 +438,11 @@ def render_strategy_creation_page(dm):
         fig_trading = plot_trading_chart(results['df'], results['trades'])
         st.plotly_chart(fig_trading, width="stretch")
         
+
         # Trade Log
-        with st.expander("📋 Trade Log"):
+        # Auto-expand if trade count is low to help diagnosis
+        expand_log = len(results['trades']) < 50
+        with st.expander("📋 Trade Log", expanded=expand_log):
             trade_data = []
             for t in results['trades']:
                 trade_data.append({
@@ -442,7 +450,8 @@ def render_strategy_creation_page(dm):
                     "Type": t.type,
                     "Price": t.entry_price,
                     "Quantity": t.quantity,
-                    "Value": t.entry_price * t.quantity
+                    "Value": t.entry_price * t.quantity,
+                    "Commission": max(t.entry_price * t.quantity * commission_rate, min_commission) # Estimate
                 })
             st.dataframe(pd.DataFrame(trade_data))
 
@@ -459,13 +468,8 @@ def render_strategy_creation_page(dm):
                 from src.analytics.performance import calculate_round_trip_returns
                 
                 # Fetch settings for Monte Carlo
-                trading_settings = st.session_state.get('trading_settings', {
-                    'sizing_method': 'Fixed Percentage (%)',
-                    'sizing_target': 95.0,
-                    'sizing_target': 95.0,
-                    'commission': DEFAULT_COMMISSION_RATE
-                })
-                commission_rate = trading_settings.get('commission', DEFAULT_COMMISSION_RATE)
+                # Use the local variable 'commission_rate' from the Backtest Settings widget directly
+                # No need to re-fetch from session state as we have the most up-to-date value here
 
                 mc_trade_returns = calculate_round_trip_returns(results['trades'], commission_rate=commission_rate)
                 

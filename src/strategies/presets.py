@@ -1,7 +1,7 @@
 import pandas as pd
 
 from src.strategies.base import Strategy
-from config.settings import (
+from src.config.settings import (
     DEFAULT_MA_WINDOW, DEFAULT_RSI_PERIOD, 
     DEFAULT_RSI_BUY_THRESHOLD, DEFAULT_RSI_SELL_THRESHOLD
 )
@@ -116,3 +116,9 @@ class BollingerBreakoutStrategy(Strategy):
         df['signal'] = df['signal'].fillna(0)
         
         return df
+
+PRESET_STRATEGIES = {
+    "MovingAverageStrategy": MovingAverageStrategy,
+    "RSIStrategy": RSIStrategy,
+    "BollingerBreakoutStrategy": BollingerBreakoutStrategy
+}

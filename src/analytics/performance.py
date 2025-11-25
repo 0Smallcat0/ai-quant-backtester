@@ -162,3 +162,66 @@ def calculate_round_trip_returns(trades: list, commission_rate: float = 0.0) -> 
                 })
                     
     return returns
+
+def calculate_metrics(equity_curve: pd.DataFrame, trades: list, initial_capital: float) -> dict:
+    """
+    Calculate standard performance metrics.
+    
+    Args:
+        equity_curve: DataFrame with 'equity', 'position_value' columns and datetime index.
+        trades: List of Trade objects.
+        initial_capital: Starting capital.
+        
+    Returns:
+        Dictionary of metrics.
+    """
+    if equity_curve.empty:
+        return {
+            "total_return": 0.0,
+            "cagr": 0.0,
+            "max_drawdown": 0.0,
+            "sharpe_ratio": 0.0,
+            "win_rate": 0.0,
+            "trades": 0,
+            "avg_exposure": 0.0
+        }
+        
+    start_equity = initial_capital
+    end_equity = equity_curve['equity'].iloc[-1]
+    
+    # CAGR
+    years = (equity_curve.index[-1] - equity_curve.index[0]).days / 365.25
+    cagr = calculate_cagr(start_equity, end_equity, years)
+    
+    # Max Drawdown
+    max_dd = calculate_max_drawdown(equity_curve['equity'])
+    
+    # Sharpe
+    daily_returns = equity_curve['equity'].pct_change().fillna(0)
+    sharpe = calculate_sharpe_ratio(daily_returns)
+    
+    # Win Rate
+    # Use simple win rate based on trade count for now, or use round_trip if available
+    # The UI uses round_trip for win rate, let's stick to simple trade PnL if possible or reuse calculate_win_rate
+    # But calculate_win_rate takes a Series of PnL.
+    # Let's use calculate_round_trip_returns to be consistent with UI.
+    trade_returns = calculate_round_trip_returns(trades)
+    win_rate = len([r for r in trade_returns if r > 0]) / len(trade_returns) if trade_returns else 0.0
+    
+    # Avg Exposure
+    # Exposure = Abs(Position Value) / Equity
+    if 'position_value' in equity_curve.columns:
+        exposure_series = equity_curve['position_value'].abs() / equity_curve['equity']
+        avg_exposure = exposure_series.mean()
+    else:
+        avg_exposure = 0.0
+        
+    return {
+        "total_return": (end_equity / start_equity) - 1,
+        "cagr": cagr,
+        "max_drawdown": max_dd,
+        "sharpe_ratio": sharpe,
+        "win_rate": win_rate,
+        "trades": len(trades),
+        "avg_exposure": avg_exposure
+    }

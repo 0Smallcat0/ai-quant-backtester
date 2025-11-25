@@ -21,10 +21,10 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME") or "gpt-4o"
 
 # Trading Constants
-DEFAULT_INITIAL_CAPITAL = 10000.0
-DEFAULT_COMMISSION_RATE = 0.001  # 0.1%
-DEFAULT_SLIPPAGE_RATE = 0.001    # 0.1%
-DEFAULT_MIN_COMMISSION = 1.0     # $1 minimum
+INITIAL_CAPITAL = 10000.0
+COMMISSION_RATE = 0.001  # 0.1%
+SLIPPAGE = 0.0005        # 5 bps
+MIN_COMMISSION = 1.0     # $1 minimum
 EPSILON = 1e-9
 
 # Strategy Constants

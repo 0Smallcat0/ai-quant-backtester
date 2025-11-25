@@ -14,6 +14,8 @@ Step 3 (Refactor): If it exists but lacks a feature, refactor the existing funct
 
 Step 4 (Create): Only create new files if the functionality is distinctly new.
 
+Step 5 (Clean): When modifying logic, actively identify and remove "Dead Code" (unused variables, old parameters, or commented-out blocks).
+
 2. Financial Logic & Mathematics (CRITICAL)
 Goal: Prevent "Fantasy Backtests" and numerical errors.
 
@@ -46,7 +48,7 @@ Target-Delta Execution:
 Do not separate BUY/SELL logic blindly. Calculate Target Position first, then derive the Delta (Trade Quantity). This prevents the "Infinite Leverage/Zombie Short" bug.
 
 2.3 Portfolio-Weighted Returns
-When calculating metrics for Monte Carlo, calculating returns based on Portfolio Equity, not just Trade Capital.
+When calculating metrics for Monte Carlo, calculate returns based on Portfolio Equity, not just Trade Capital.
 
 Correct: (PnL / Total_Account_Equity)
 
@@ -62,6 +64,8 @@ Green (Implement): Write the minimal code in src/ to pass the test.
 Refactor: Optimize the code without breaking the test.
 
 Verify: Run pytest to ensure no regressions in other modules.
+
+Integration Check: (New!) If adding a parameter, verify the UI actually controls it (see Section 7).
 
 4. UI & Visualization Guidelines (Streamlit/Plotly)
 Goal: Consistent UX and bug-free rendering.
@@ -92,3 +96,27 @@ Python
 
 df.columns = [c.lower() for c in df.columns]
 Resource Cleanup: Always close database connections, preferably using with context managers or try...finally blocks.
+
+7. Configuration & Parameter Synchronization (SSOT)
+Goal: Prevent "Phantom Parameters" (UI settings that do not affect the backend).
+
+7.1 Single Source of Truth
+Definition: src/config/settings.py is the only place where configuration constants (e.g., DEFAULT_SLIPPAGE, DEFAULT_COMMISSION) are defined.
+
+Prohibition: Do not hardcode magic numbers (e.g., commission=0.001) inside BacktestEngine or UI files. Import them from settings.py.
+
+7.2 Strict UI/Backend Mapping
+1:1 Correspondence: If you add a parameter to BacktestEngine.__init__ (e.g., slippage), you MUST immediately update the instantiation call in src/ui/strategy_creation.py (or app.py).
+
+Naming Convention: Use consistent variable names across the stack.
+
+Bad: UI uses slippage_rate, Backend uses slippage.
+
+Good: UI uses slippage, Backend uses slippage.
+
+7.3 Sensitivity Testing (Mandatory)
+Requirement: When introducing a new global parameter (e.g., Slippage), you must write a Sensitivity Test in tests/test_config_sensitivity.py.
+
+Method: Run the backtest twice with different values for the parameter.
+
+Assertion: Assert that Result_A != Result_B. If changing the parameter yields the exact same result, the feature is considered broken/disconnected.

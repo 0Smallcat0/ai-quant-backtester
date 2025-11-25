@@ -31,7 +31,7 @@ class TestAdvancedLogic(unittest.TestCase):
 
     def test_trade_object_access(self):
         """Test that trades are stored as objects and accessible."""
-        engine = BacktestEngine(initial_capital=10000, slippage_rate=0.0, commission_rate=0.0, min_commission=0.0)
+        engine = BacktestEngine(initial_capital=10000, slippage=0.0, commission_rate=0.0, min_commission=0.0)
         signals = pd.Series(0, index=self.df.index)
         signals.iloc[0] = 1 # Buy
         signals = signals.replace(0, np.nan).ffill().fillna(0)

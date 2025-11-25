@@ -26,7 +26,7 @@ def test_execution_t_plus_1(mock_price_data):
     Scenario: Day 1 Close signal -> Buy.
     Expected: Trade executed at Day 2 Open.
     """
-    engine = BacktestEngine(initial_capital=100000, slippage_rate=0.0)
+    engine = BacktestEngine(initial_capital=100000, slippage=0.0)
     
     # Create signals: Buy on Day 1 (index 0)
     signals = pd.Series(0, index=mock_price_data.index)
@@ -53,7 +53,7 @@ def test_position_sizing_fixed_pct(mock_price_data):
     Scenario: Initial 100,000, target 50%.
     Expected: Order value approx 50,000.
     """
-    engine = BacktestEngine(initial_capital=100000, slippage_rate=0.0)
+    engine = BacktestEngine(initial_capital=100000, slippage=0.0)
     engine.set_position_sizing(method="fixed_percent", target=0.5)
     
     signals = pd.Series(0, index=mock_price_data.index)
@@ -79,7 +79,7 @@ def test_long_only_mode(mock_price_data):
     Scenario: long_only=True, Short signal.
     Expected: Signal ignored, no trade.
     """
-    engine = BacktestEngine(initial_capital=100000, long_only=True, slippage_rate=0.0)
+    engine = BacktestEngine(initial_capital=100000, long_only=True, slippage=0.0)
     
     signals = pd.Series(0, index=mock_price_data.index)
     signals.iloc[0] = -1  # Short signal
@@ -109,7 +109,7 @@ def test_commission_deduction():
     initial_capital = 100000
     commission_rate = 0.001
     
-    engine = BacktestEngine(initial_capital=initial_capital, commission_rate=commission_rate, slippage_rate=0.0)
+    engine = BacktestEngine(initial_capital=initial_capital, commission_rate=commission_rate, slippage=0.0)
     
     # We need to force a purchase of 100 shares.
     # If we use fixed_amount = 10000, and price is 100, we get 100 shares.
@@ -138,7 +138,7 @@ def test_bankruptcy_protection(mock_price_data):
     Scenario: Initial 1000, Price 100. Target 100% (or more).
     Expected: Should only buy what we can afford (approx 10 shares).
     """
-    engine = BacktestEngine(initial_capital=1000, slippage_rate=0.0, min_commission=0.0)
+    engine = BacktestEngine(initial_capital=1000, slippage=0.0, min_commission=0.0)
     # Try to buy way more than we can afford
     engine.set_position_sizing(method="fixed_amount", amount=100000) 
     

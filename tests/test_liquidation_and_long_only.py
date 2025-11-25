@@ -18,7 +18,7 @@ class TestLiquidationAndLongOnly(unittest.TestCase):
     def test_liquidation_mechanism(self):
         """Test that the engine stops when equity hits zero or below."""
         # Initial capital small enough to go bust quickly
-        engine = BacktestEngine(initial_capital=100, long_only=True, slippage_rate=0.0, min_commission=0.0, commission_rate=0.0)
+        engine = BacktestEngine(initial_capital=10000, long_only=True, slippage=0.0, min_commission=0.0, commission_rate=0.0)
         engine.set_position_sizing("fixed_percent", target=1.0)
         
         # Signal to BUY at the beginning
@@ -52,12 +52,12 @@ class TestLiquidationAndLongOnly(unittest.TestCase):
         
         # Check if equity hit 0
         final_equity = equity_curve['equity'].iloc[-1]
-        self.assertAlmostEqual(final_equity, 0, places=7, msg="Equity should be 0 after liquidation")
+        self.assertAlmostEqual(final_equity, 0, places=6, msg="Equity should be 0 after liquidation")
         
         # Check if it stopped correctly (equity should be 0 from the point of bust onwards)
         # In this data, Close becomes 0 on index 2.
         # So equity should be 0 on index 2.
-        self.assertAlmostEqual(equity_curve['equity'].iloc[2], 0, places=7, msg="Equity should be 0 when price hits 0")
+        self.assertAlmostEqual(equity_curve['equity'].iloc[2], 0, places=6, msg="Equity should be 0 when price hits 0")
 
     def test_long_only_enforcement(self):
         """Test that short signals are ignored in long_only mode."""

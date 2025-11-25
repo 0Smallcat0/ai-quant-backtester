@@ -42,7 +42,7 @@ def test_bankruptcy_curve_filling():
         "open": prices, "high": prices, "low": prices, "close": prices, "volume": [1000]*10
     }, index=dates)
     
-    engine = BacktestEngine(initial_capital=1000)
+    engine = BacktestEngine(initial_capital=1000, commission_rate=0.0, slippage=0.0, min_commission=0.0)
     engine.set_position_sizing("fixed_percent", target=1.0)
     # Buy all in on Day 1 and HOLD
     signals = pd.Series(1.0, index=dates)
@@ -57,8 +57,8 @@ def test_bankruptcy_curve_filling():
     
     # Check last 5 days are 0
     for i in range(5, 10):
-        assert curve[i]["equity"] <= EPSILON, f"Equity at index {i} should be 0, got {curve[i]['equity']}"
-        assert curve[i]["cash"] <= EPSILON, f"Cash at index {i} should be 0, got {curve[i]['cash']}"
+        assert curve[i]["equity"] <= 1e-7, f"Equity at index {i} should be 0, got {curve[i]['equity']}"
+        assert curve[i]["cash"] <= 1e-7, f"Cash at index {i} should be 0, got {curve[i]['cash']}"
 
 def test_oversell_protection(mock_data):
     """

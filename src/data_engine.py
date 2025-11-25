@@ -61,7 +61,8 @@ class DataManager:
         - Crypto: BTC -> BTC-USD
         """
         try:
-            ticker = ticker.strip().upper()
+            # [FIX] Sanitize ticker
+            ticker = ticker.strip().strip("'").strip('"').upper()
             
             # Check if it's a Taiwan stock (numeric, 4 digits)
             if ticker.isdigit() and len(ticker) == 4:
@@ -170,7 +171,13 @@ class DataManager:
                 progress_callback(i / total_years, f"Downloading {ticker} data for {year}...")
 
             try:
-                df_chunk = yf.download(ticker, start=chunk_start, end=chunk_end, progress=False, multi_level_index=False, auto_adjust=True)
+                # [FIX] Disable auto_adjust for Taiwan stocks to prevent zero volume bug
+                # yfinance has a known issue with auto_adjust=True for .TW/.TWO ETFs (like 0056)
+                use_auto_adjust = True
+                if ticker.endswith('.TW') or ticker.endswith('.TWO'):
+                    use_auto_adjust = False
+                
+                df_chunk = yf.download(ticker, start=chunk_start, end=chunk_end, progress=False, multi_level_index=False, auto_adjust=use_auto_adjust)
                 if not df_chunk.empty:
                     all_dfs.append(df_chunk)
             except Exception as e:
@@ -193,6 +200,13 @@ class DataManager:
         
         # Normalize columns to lowercase
         df.columns = [str(c).lower() for c in df.columns]
+        
+        # [FIX] Handle Volume NaN/Zero issues
+        # Ensure 'volume' exists (renamed from 'Volume' by lowercase above)
+        if 'volume' in df.columns:
+            # Forward fill volume first (assume missing volume is same as previous day or 0)
+            # Then fill remaining NaNs with 0
+            df['volume'] = df['volume'].ffill().fillna(0).astype(float)
         
         # [ROBUSTNESS] Drop duplicates based on date
         if 'date' in df.columns:
@@ -232,6 +246,8 @@ class DataManager:
 
     def get_data(self, ticker: str) -> pd.DataFrame:
         """Load data from DB for a specific ticker."""
+        # [FIX] Sanitize ticker
+        ticker = ticker.strip().strip("'").strip('"').upper()
         conn = self.get_connection()
         try:
             # Use parameterized query for safety, though ticker is internal
@@ -244,23 +260,32 @@ class DataManager:
             df['date'] = pd.to_datetime(df['date'])
             df = df.set_index('date') # Explicit assignment instead of inplace
             
-            # Rename columns to Title Case to match BacktestEngine expectations
-            df = df.rename(columns={
-                'open': 'Open',
-                'high': 'High',
-                'low': 'Low',
-                'close': 'Close',
-                'volume': 'Volume'
-            })
+            # [FIX] Enforce lowercase columns (Data Management Protocol)
+            # Remove TitleCase renaming and ensure all columns are lowercase
+            df.columns = [c.lower() for c in df.columns]
             
             # Ensure numeric columns are floats
-            cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+            cols = ['open', 'high', 'low', 'close', 'volume']
             for c in cols:
                 if c in df.columns:
-                    df[c] = pd.to_numeric(df[c], errors='coerce') # Add errors='coerce'
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
             
-            # [SAFETY] Clean Data: Replace Inf with NaN and drop NaNs
-            df = df.replace([np.inf, -np.inf], np.nan).dropna()
+            # [SAFETY] Clean Data: Smart Patching
+            # 1. Replace Inf with NaN
+            df = df.replace([np.inf, -np.inf], np.nan)
+            
+            # 2. Fix Volume (Missing volume -> 0.0)
+            if 'volume' in df.columns:
+                df['volume'] = df['volume'].fillna(0.0)
+            
+            # 3. Fix Price (Missing price -> ffill, then drop if still missing)
+            price_cols = [c for c in ['open', 'high', 'low', 'close'] if c in df.columns]
+            if price_cols:
+                df[price_cols] = df[price_cols].ffill()
+                df = df.dropna(subset=price_cols)
+            else:
+                # Fallback if no price columns (unlikely)
+                df = df.dropna()
         
         # [ROBUSTNESS] Empty Guard
         if df.empty:
@@ -283,6 +308,11 @@ class DataManager:
 
     def add_to_watchlist(self, symbol: str) -> None:
         """Add a symbol to the watchlist."""
+        if not symbol or not symbol.strip():
+            raise ValueError("Ticker symbol cannot be empty.")
+        # [FIX] Sanitize symbol
+        symbol = symbol.strip().strip("'").strip('"').upper()
+        
         conn = self.get_connection()
         cursor = conn.cursor()
         try:

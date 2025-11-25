@@ -1,8 +1,44 @@
 import streamlit as st
 import time
 import pandas as pd
+import re
 from datetime import datetime
 from src.ui.plotting import plot_price_history
+
+def _categorize_tickers(watchlist):
+    categories = {
+        'TW': [],
+        'US': [],
+        'Crypto': [],
+        'Other': []
+    }
+    
+    for ticker in watchlist:
+        # TW: 4 digits at start or ends with .TW
+        if (ticker[:4].isdigit() and len(ticker) >= 4) or ticker.endswith('.TW'):
+            categories['TW'].append(ticker)
+        # Crypto: Contains -USD
+        elif '-USD' in ticker:
+            categories['Crypto'].append(ticker)
+        # US: All uppercase, no - or . (basic check)
+        elif ticker.isupper() and '-' not in ticker and '.' not in ticker:
+            categories['US'].append(ticker)
+        else:
+            categories['Other'].append(ticker)
+            
+    # Sorting
+    def tw_sort_key(t):
+        match = re.match(r"(\d+)", t)
+        if match:
+            return int(match.group(1))
+        return float('inf')
+        
+    categories['TW'].sort(key=tw_sort_key)
+    categories['US'].sort()
+    categories['Crypto'].sort()
+    categories['Other'].sort()
+    
+    return categories
 
 def render_data_management_page(dm):
     """
@@ -21,26 +57,63 @@ def render_data_management_page(dm):
             # Add Ticker
             new_ticker = st.text_input("Add Ticker Symbol", placeholder="e.g., AAPL, 2330, BTC", key="dm_add_ticker")
             if st.button("Add to Watchlist", type="primary"):
-                try:
-                    normalized = dm.normalize_ticker(new_ticker)
-                    dm.add_to_watchlist(normalized)
-                    st.success(f"Added **{normalized}** to watchlist.")
-                    st.rerun()
-                except ValueError as e:
-                    st.error(str(e))
+                if not new_ticker.strip():
+                    st.error("⚠️ Ticker symbol cannot be empty!")
+                else:
+                    try:
+                        normalized = dm.normalize_ticker(new_ticker)
+                        dm.add_to_watchlist(normalized)
+                        st.success(f"Added **{normalized}** to watchlist.")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
         
         with col2:
-            # Remove Ticker
+            # Remove Ticker (Categorized)
             watchlist = dm.get_watchlist()
             if watchlist:
-                st.write(f"**Total Tracked:** {len(watchlist)}")
-                to_remove = st.multiselect("Remove Tickers", watchlist, key="dm_remove_ticker")
-                if to_remove:
-                    if st.button("Confirm Removal"):
-                        for t in to_remove:
-                            dm.remove_from_watchlist(t)
-                        st.success(f"Removed {len(to_remove)} tickers.")
-                        st.rerun()
+                # Categorize
+                cats = _categorize_tickers(watchlist)
+                
+                # Summary Metrics
+                total = len(watchlist)
+                tw_count = len(cats['TW'])
+                us_count = len(cats['US'])
+                crypto_count = len(cats['Crypto'])
+                
+                st.write(f"**Total:** {total} (TW:{tw_count}, US:{us_count}, Cryp:{crypto_count})")
+                
+                # Tabs
+                tabs = st.tabs(["TW", "US", "Cryp", "Oth"])
+                
+                # Helper to render removal list
+                def render_removal_list(category_name, tickers, key_suffix):
+                    if not tickers:
+                        st.caption(f"No {category_name} tickers.")
+                        return
+                    
+                    to_remove = st.multiselect(
+                        f"Remove {category_name}", 
+                        tickers, 
+                        key=f"remove_{key_suffix}",
+                        label_visibility="collapsed"
+                    )
+                    if to_remove:
+                        if st.button(f"Remove Selected", key=f"btn_remove_{key_suffix}"):
+                            for t in to_remove:
+                                dm.remove_from_watchlist(t)
+                            st.success(f"Removed {len(to_remove)} tickers.")
+                            st.rerun()
+
+                with tabs[0]:
+                    render_removal_list("TW", cats['TW'], "tw")
+                with tabs[1]:
+                    render_removal_list("US", cats['US'], "us")
+                with tabs[2]:
+                    render_removal_list("Crypto", cats['Crypto'], "crypto")
+                with tabs[3]:
+                    render_removal_list("Other", cats['Other'], "other")
+                    
             else:
                 st.info("Watchlist is empty.")
 
@@ -91,7 +164,25 @@ def render_data_management_page(dm):
     
     watchlist = dm.get_watchlist()
     if watchlist:
-        selected_ticker = st.selectbox("Select Ticker to View", watchlist, index=0, key="dm_preview_select")
+        # Categorize
+        cats = _categorize_tickers(watchlist)
+        
+        # Category Filter
+        category_options = ["All", "TW", "US", "Crypto", "Other"]
+        selected_category = st.radio("Filter by Category", category_options, horizontal=True, key="dm_preview_cat")
+        
+        # Filter Tickers
+        if selected_category == "All":
+            # Combine all sorted lists
+            filtered_watchlist = cats['TW'] + cats['US'] + cats['Crypto'] + cats['Other']
+        else:
+            filtered_watchlist = cats[selected_category]
+            
+        if not filtered_watchlist:
+            st.warning(f"No tickers found in category '{selected_category}'.")
+            return
+
+        selected_ticker = st.selectbox("Select Ticker to View", filtered_watchlist, index=0, key="dm_preview_select")
         
         # Fetch Data
         df = dm.get_data(selected_ticker)
@@ -100,12 +191,12 @@ def render_data_management_page(dm):
             # Display Metrics
             latest = df.iloc[-1]
             prev = df.iloc[-2] if len(df) > 1 else latest
-            change = latest['Close'] - prev['Close']
-            pct_change = (change / prev['Close']) * 100
+            change = latest['close'] - prev['close']
+            pct_change = (change / prev['close']) * 100
             
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Close Price", f"{latest['Close']:.2f}", f"{change:.2f} ({pct_change:.2f}%)")
-            m2.metric("Volume", f"{latest['Volume']:,}")
+            m1.metric("Close Price", f"{latest['close']:.2f}", f"{change:.2f} ({pct_change:.2f}%)")
+            m2.metric("Volume", f"{latest['volume']:,}")
             m3.metric("Date", str(latest.name.date()))
             m4.metric("Records", len(df))
             
