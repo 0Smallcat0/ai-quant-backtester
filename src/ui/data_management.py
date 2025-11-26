@@ -206,7 +206,15 @@ def render_data_management_page(dm):
             with tab1:
 
                 fig = plot_price_history(df, selected_ticker)
-                st.plotly_chart(fig, width="stretch")
+                st.plotly_chart(
+                    fig, 
+                    width="stretch",
+                    config={
+                        'scrollZoom': True, 
+                        'displayModeBar': True,
+                        'modeBarButtonsable': ['zoom2d', 'pan2d', 'resetScale2d', 'autoScale2d']
+                    }
+                )
                 
             with tab2:
                 st.dataframe(df.sort_index(ascending=False))

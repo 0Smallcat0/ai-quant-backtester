@@ -11,7 +11,13 @@ def sanitize_ticker(ticker: str) -> str:
     """
     if not ticker:
         return ""
-    return ticker.strip().strip("'").strip('"').upper()
+    return ticker.strip().strip("'").strip('"').strip().upper()
+
+def strip_quotes(text: str) -> str:
+    """Remove single and double quotes from a string without changing case."""
+    if not text:
+        return ""
+    return text.strip().strip("'").strip('"')
 
 def add_project_root() -> None:
     """

@@ -176,9 +176,9 @@ class BacktestEngine:
             
             # [FIX] Minimum Exposure Filter
             # Prevent ghost positions by ensuring target value is at least 0.1% of equity
-            MIN_EXPOSURE_THRESHOLD = 0.001
+            # MIN_EXPOSURE_THRESHOLD is now sourced from settings
             target_value = target_qty * current_open
-            if abs(target_value) < (current_equity_open * MIN_EXPOSURE_THRESHOLD):
+            if abs(target_value) < (current_equity_open * settings.MIN_EXPOSURE_THRESHOLD):
                 target_qty = 0.0
             
             # Enforce Long-Only

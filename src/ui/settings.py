@@ -7,7 +7,7 @@ from src.config.settings import settings
 # Load existing environment variables
 load_dotenv()
 
-MODELS_CONFIG_PATH = "config/models.json"
+MODELS_CONFIG_PATH = "src/config/models.json"
 
 def load_models():
     """Loads the list of models from config/models.json."""
@@ -145,19 +145,8 @@ def render_global_settings_page(dm):
     current_settings = st.session_state.get('trading_settings', {})
     
     # Defaults from SSOT if not in session state
-    def_cap = float(current_settings.get('initial_capital', settings.INITIAL_CAPITAL))
-    def_comm = float(current_settings.get('commission_rate', settings.COMMISSION_RATE))
-    def_slip = float(current_settings.get('slippage', settings.SLIPPAGE))
-    def_min_comm = float(current_settings.get('min_commission', settings.MIN_COMMISSION))
-    
-    st.subheader("💰 Capital & Costs")
-    c_cap, c_comm = st.columns(2)
-    with c_cap:
-        initial_capital = st.number_input("Initial Capital ($)", min_value=100.0, value=def_cap, step=100.0)
-        min_commission = st.number_input("Min Commission ($)", min_value=0.0, value=def_min_comm, step=0.5)
-    with c_comm:
-        commission_rate = st.number_input("Commission Rate (0.001 = 0.1%)", min_value=0.0, value=def_comm, step=0.0001, format="%.4f")
-        slippage = st.number_input("Slippage (0.001 = 0.1%)", min_value=0.0, value=def_slip, step=0.0001, format="%.4f")
+    # Initialize Session State keys if not present
+    # (Removed redundant trading params: initial_capital, etc. are now in Strategy Creation)
 
     st.subheader("📐 Position Sizing")
     c1, c2 = st.columns(2)
@@ -197,11 +186,7 @@ def render_global_settings_page(dm):
         
         st.session_state['trading_settings'] = {
             'sizing_method': sizing_method,
-            'sizing_target': sizing_target,
-            'initial_capital': initial_capital,
-            'commission_rate': commission_rate,
-            'slippage': slippage,
-            'min_commission': min_commission
+            'sizing_target': sizing_target
         }
         
         # Update Environment Variables (Hot Reload)

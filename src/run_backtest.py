@@ -8,13 +8,13 @@ import logging
 
 # Add src to python path to allow imports
 try:
-    from src.utils import add_project_root, sanitize_ticker
+    from src.utils import add_project_root, sanitize_ticker, strip_quotes
 except ImportError:
-    from utils import add_project_root, sanitize_ticker
+    from utils import add_project_root, sanitize_ticker, strip_quotes
 add_project_root()
 
 from src.data_engine import DataManager
-from src.strategies.loader import StrategyLoader
+from src.strategies.loader import StrategyLoader, StrategyLoadError
 from src.backtest_engine import BacktestEngine
 from src.strategies.presets import PRESET_STRATEGIES
 from src.config.settings import settings
@@ -38,19 +38,19 @@ def main():
     if args.ticker:
         args.ticker = sanitize_ticker(args.ticker)
     if args.strategy_name:
-        args.strategy_name = args.strategy_name.strip().strip("'").strip('"')
+        args.strategy_name = strip_quotes(args.strategy_name)
     if args.start:
         # [FIX] Do not use sanitize_ticker for dates as it upper-cases them
-        args.start = args.start.strip().strip("'").strip('"')
+        args.start = strip_quotes(args.start)
     if args.end:
-        args.end = args.end.strip().strip("'").strip('"')
+        args.end = strip_quotes(args.end)
     
     # Parse params
     strategy_params = {}
     if args.params:
         try:
             # Handle potential double quotes issues from shell
-            cleaned_params = args.params.strip("'").strip('"')
+            cleaned_params = strip_quotes(args.params)
             strategy_params = json.loads(cleaned_params)
         except json.JSONDecodeError as e:
             logger.error(f"Error parsing params JSON: {e}")
@@ -79,19 +79,38 @@ def main():
 
     # 2. Load Strategy
     # [FIX] Unmask errors: Remove broad try-except and allow errors to bubble up
+    # 2. Load Strategy
     loader = StrategyLoader()
-    strategy_class = loader.load_strategy(args.strategy_name)
+    strategy_class = None
+    
+    try:
+        # 1. Try loading via Loader (File or Exact Match)
+        strategy_class = loader.load_strategy(args.strategy_name)
+    except (StrategyLoadError, ImportError, AttributeError):
+        # 2. If Loader fails, proceed to Fallback (Presets)
+        pass
 
     if strategy_class is None:
-            # Fallback to checking presets directly if loader didn't find it (or if loader only does user files)
+        # 3. Fuzzy Search in Presets
+        # Case 1: Exact Match in Presets
         if args.strategy_name in PRESET_STRATEGIES:
-                strategy_class = PRESET_STRATEGIES[args.strategy_name]
+            strategy_class = PRESET_STRATEGIES[args.strategy_name]
+        # Case 2: Suffix Auto-complete (e.g. "RSI" -> "RSIStrategy")
+        elif f"{args.strategy_name}Strategy" in PRESET_STRATEGIES:
+            strategy_class = PRESET_STRATEGIES[f"{args.strategy_name}Strategy"]
+        # Case 3: Case-Insensitive Search
         else:
-            # Should not happen if load_strategy raises error, but kept for safety
-            raise ValueError(f"Strategy not found: {args.strategy_name}")
+            target_upper = args.strategy_name.upper()
+            for name, cls in PRESET_STRATEGIES.items():
+                if name.upper() == target_upper or name.upper() == f"{target_upper}STRATEGY":
+                    strategy_class = cls
+                    break
+    
+    if strategy_class is None:
+        raise ValueError(f"Strategy '{args.strategy_name}' not found in files or presets.")
 
     # 3. Initialize Engine
-    engine = BacktestEngine(initial_capital=10000.0)
+    engine = BacktestEngine()
     
     # Instantiate strategy with params
     # Check if strategy accepts params

@@ -15,8 +15,8 @@ class DataManager:
         self.db_path = db_path
 
     def get_connection(self) -> sqlite3.Connection:
-        # [SAFETY] Increased timeout to 30s to prevent 'database is locked' errors
-        return sqlite3.connect(self.db_path, timeout=30.0)
+        # [SAFETY] Increased timeout to prevent 'database is locked' errors
+        return sqlite3.connect(self.db_path, timeout=settings.DEFAULT_TIMEOUT)
 
     def init_db(self) -> None:
         """Initialize the SQLite database with required tables."""
@@ -97,8 +97,7 @@ class DataManager:
                 return f"{ticker}.TW"
 
             # Check if it's likely a Crypto (e.g., BTC, ETH) and not a standard US ticker
-            known_cryptos = {'BTC', 'ETH', 'DOGE', 'XRP', 'SOL', 'ADA'}
-            if ticker in known_cryptos:
+            if ticker in settings.KNOWN_CRYPTOS:
                 return f"{ticker}-USD"
 
             return ticker
@@ -155,20 +154,25 @@ class DataManager:
         start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
         
-        # Generate yearly chunks
-        years = range(start_dt.year, end_dt.year + 1)
-        total_years = len(years)
+        # Generate chunks based on MAX_CHUNK_YEARS
+        year_start = start_dt.year
+        year_end = end_dt.year
+        
+        chunk_start_years = range(year_start, year_end + 1, settings.MAX_CHUNK_YEARS)
+        total_chunks = len(chunk_start_years)
         
         all_dfs = []
         
-        for i, year in enumerate(years):
-            chunk_start = f"{year}-01-01"
-            chunk_end = f"{year}-12-31"
+        for i, chunk_start_year in enumerate(chunk_start_years):
+            chunk_end_year = min(chunk_start_year + settings.MAX_CHUNK_YEARS - 1, year_end)
+            
+            chunk_start = f"{chunk_start_year}-01-01"
+            chunk_end = f"{chunk_end_year}-12-31"
             
             # Adjust for actual start/end
-            if year == start_dt.year:
+            if chunk_start_year == year_start:
                 chunk_start = start_date
-            if year == end_dt.year:
+            if chunk_end_year == year_end:
                 chunk_end = end_date
                 
             # Skip if start > end
@@ -176,10 +180,10 @@ class DataManager:
                 continue
 
             if progress_callback:
-                progress_callback(i / total_years, f"Downloading {ticker} data for {year}...")
+                progress_callback(i / total_chunks, f"Downloading {ticker} data for {chunk_start_year}-{chunk_end_year}...")
 
             # Retry logic for yfinance download
-            max_retries = 3
+            max_retries = settings.MAX_RETRIES
             for attempt in range(max_retries):
                 try:
                     # [FIX] Disable auto_adjust for Taiwan stocks to prevent zero volume bug
@@ -196,11 +200,11 @@ class DataManager:
                     
                 except Exception as e:
                     if attempt < max_retries - 1:
-                        sleep_time = 2 ** attempt
-                        print(f"Error fetching {year} for {ticker}: {e}. Retrying in {sleep_time}s...")
+                        sleep_time = settings.RETRY_BACKOFF_FACTOR ** attempt
+                        print(f"Error fetching {chunk_start_year}-{chunk_end_year} for {ticker}: {e}. Retrying in {sleep_time}s...")
                         time.sleep(sleep_time)
                     else:
-                        print(f"Failed to fetch {year} for {ticker} after {max_retries} attempts: {e}")
+                        print(f"Failed to fetch {chunk_start_year}-{chunk_end_year} for {ticker} after {max_retries} attempts: {e}")
 
         if progress_callback:
             progress_callback(1.0, f"Finalizing {ticker} data...")

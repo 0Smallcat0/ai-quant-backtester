@@ -51,18 +51,24 @@ def render_strategy_creation_page(dm):
         
         # Load defaults from global settings if available
         global_settings = st.session_state.get('trading_settings', {})
-        default_cap = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
-        default_comm = float(global_settings.get('commission_rate', settings.COMMISSION_RATE))
-        default_slip = float(global_settings.get('slippage', settings.SLIPPAGE))
-        default_min_comm = float(global_settings.get('min_commission', settings.MIN_COMMISSION))
+        
+        # Initialize Session State for Strategy Creation (sc_) if not present
+        if 'sc_initial_capital' not in st.session_state:
+            st.session_state['sc_initial_capital'] = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+        if 'sc_commission_rate' not in st.session_state:
+            st.session_state['sc_commission_rate'] = float(global_settings.get('commission_rate', settings.COMMISSION_RATE))
+        if 'sc_slippage' not in st.session_state:
+            st.session_state['sc_slippage'] = float(global_settings.get('slippage', settings.SLIPPAGE))
+        if 'sc_min_commission' not in st.session_state:
+            st.session_state['sc_min_commission'] = float(global_settings.get('min_commission', settings.MIN_COMMISSION))
         
         c1, c2, c3 = st.columns(3)
-        initial_capital = c1.number_input("Initial Capital ($)", min_value=100.0, value=default_cap, step=100.0)
-        commission_rate = c2.number_input("Commission Rate (0.001 = 0.1%)", min_value=0.0, value=default_comm, step=0.0001, format="%.4f")
-        slippage = c3.number_input("Slippage (0.001 = 0.1%)", min_value=0.0, value=default_slip, step=0.0001, format="%.4f")
+        initial_capital = c1.number_input("Initial Capital ($)", min_value=100.0, key="sc_initial_capital", step=100.0)
+        commission_rate = c2.number_input("Commission Rate (0.001 = 0.1%)", min_value=0.0, key="sc_commission_rate", step=0.0001, format="%.4f")
+        slippage = c3.number_input("Slippage (0.001 = 0.1%)", min_value=0.0, key="sc_slippage", step=0.0001, format="%.4f")
         
         c4, c5 = st.columns(2)
-        min_commission = c4.number_input("Min Commission ($)", min_value=0.0, value=default_min_comm, step=0.5)
+        min_commission = c4.number_input("Min Commission ($)", min_value=0.0, key="sc_min_commission", step=0.5)
         long_only_mode = c5.checkbox("Long Only (No Shorting)", value=True, help="If checked, the strategy will not take short positions.")
 
     # --- 2. Strategy Definition ---

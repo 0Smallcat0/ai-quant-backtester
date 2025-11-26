@@ -36,7 +36,11 @@ def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = settings.
     Calculate Sharpe Ratio.
     (Daily_Returns.mean() - Risk_Free_Rate_Daily) / Daily_Returns.std() * sqrt(252)
     """
-    if returns.empty or returns.std() == 0:
+    if returns.empty:
+        return 0.0
+        
+    std = returns.std()
+    if np.isnan(std) or std < 1e-9:
         return 0.0
     
     # Convert annual risk free rate to daily

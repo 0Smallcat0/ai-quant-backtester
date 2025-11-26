@@ -49,7 +49,9 @@ class RSIStrategy(Strategy):
         self.sell_threshold = sell_threshold
 
     def _calculate_rsi(self, series: pd.Series, period: int) -> pd.Series:
-        delta = series.diff()
+        # [SAFETY] Use shifted data to prevent look-ahead bias (consistent with safe_rolling)
+        # We calculate changes based on T-1 data
+        delta = series.shift(1).diff()
         
         # Separate gains and losses
         gain = (delta.where(delta > 0, 0)).fillna(0)

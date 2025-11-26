@@ -19,7 +19,7 @@ def render_approval_ui(action: PendingAction):
         col_yes, col_no = st.columns(2)
         
         with col_yes:
-            if st.button("✅ Approve", key="approve_btn", use_container_width=True):
+            if st.button("✅ Approve", key="approve_btn", width="stretch"):
                 # Execute the tool
                 # We need to access the agent instance to run the tool. 
                 # Since _run_tool is internal, we should ideally expose it or use it carefully.
@@ -41,7 +41,7 @@ def render_approval_ui(action: PendingAction):
                 st.rerun()
                 
         with col_no:
-            if st.button("❌ Reject", key="reject_btn", use_container_width=True):
+            if st.button("❌ Reject", key="reject_btn", width="stretch"):
                 # Append rejection to history
                 st.session_state.agent_messages.append({"role": "user", "content": "User rejected the request."})
                 

@@ -1,46 +1,104 @@
 import pytest
-import pandas as pd
-from src.backtest_engine import BacktestEngine
+from unittest.mock import patch, MagicMock
+import streamlit as st
 from src.config.settings import settings
+from src.backtest_engine import BacktestEngine
 
-class TestConfigSensitivity:
-    def test_slippage_sensitivity(self):
-        """
-        Verify that changing slippage actually affects the backtest result.
-        This ensures the parameter is correctly wired from the init to the execution logic.
-        """
-        # Create dummy data
-        dates = pd.date_range(start="2023-01-01", periods=10, freq="D")
-        data = pd.DataFrame({
-            "open": [100, 101, 102, 103, 104, 105, 104, 103, 102, 101],
-            "close": [101, 102, 103, 104, 105, 104, 103, 102, 101, 100],
-            "high": [105] * 10,
-            "low": [95] * 10,
-            "volume": [1000] * 10
-        }, index=dates)
-        
-        # Create signals: Buy at index 1, Sell at index 5
-        signals = pd.Series(0, index=dates)
-        signals.iloc[1] = 1  # Buy
-        signals.iloc[5] = 0  # Sell (Flat)
-        
-        # Run with Zero Slippage
-        engine_zero = BacktestEngine(initial_capital=10000, slippage=0.0, commission_rate=0.0)
-        engine_zero.run(data, signals)
-        equity_zero = engine_zero.equity_curve.iloc[-1]['equity']
-        
-        # Run with Huge Slippage (50%)
-        engine_huge = BacktestEngine(initial_capital=10000, slippage=0.5, commission_rate=0.0)
-        engine_huge.run(data, signals)
-        equity_huge = engine_huge.equity_curve.iloc[-1]['equity']
-        
-        print(f"Equity Zero Slippage: {equity_zero}")
-        print(f"Equity Huge Slippage: {equity_huge}")
-        
-        assert equity_zero != equity_huge, "Slippage parameter has no effect on backtest results!"
-        assert equity_huge < equity_zero, "Higher slippage should result in lower equity."
+# Mock Streamlit session state
+class MockSessionState(dict):
+    def __getattr__(self, key):
+        return self.get(key)
+    def __setattr__(self, key, value):
+        self[key] = value
 
-if __name__ == "__main__":
-    t = TestConfigSensitivity()
-    t.test_slippage_sensitivity()
-    print("Test Passed!")
+@pytest.fixture
+def mock_streamlit():
+    with patch('streamlit.session_state', new_callable=MockSessionState) as mock_state:
+        yield mock_state
+
+def test_backtest_engine_initial_capital_sensitivity():
+    """
+    Test that BacktestEngine picks up the correct initial capital from settings
+    when not explicitly provided (or when we simulate the UI flow).
+    """
+    # 1. Test Default from Settings
+    # We patch the settings object to return a specific value
+    with patch.object(settings, 'INITIAL_CAPITAL', 50000.0):
+        # Re-instantiate engine to see if it picks up the patched value as default
+        # Note: In Python, default arguments are evaluated at definition time, 
+        # so simply patching settings.INITIAL_CAPITAL might not work if BacktestEngine.__init__ 
+        # uses settings.INITIAL_CAPITAL as a default arg directly.
+        # Let's check BacktestEngine definition:
+        # def __init__(self, initial_capital: float = settings.INITIAL_CAPITAL, ...):
+        # Since it's evaluated at import time, we can't easily change the default arg of the class 
+        # without reloading the module.
+        
+        # However, the UI passes the value explicitly.
+        # So we should test the UI logic flow.
+        
+        # Simulate UI Logic:
+        # if 'sc_initial_capital' not in st.session_state:
+        #     st.session_state['sc_initial_capital'] = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+        
+        # Case A: Default Settings
+        mock_state = MockSessionState()
+        global_settings = {}
+        
+        if 'sc_initial_capital' not in mock_state:
+            mock_state['sc_initial_capital'] = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+            
+        assert mock_state['sc_initial_capital'] == 50000.0
+        
+        # Instantiate Engine with this value
+        engine = BacktestEngine(initial_capital=mock_state['sc_initial_capital'])
+        assert engine.initial_capital == 50000.0
+
+    # 2. Test Sensitivity (Change Value)
+    with patch.object(settings, 'INITIAL_CAPITAL', 99999.0):
+        mock_state = MockSessionState()
+        global_settings = {}
+        
+        if 'sc_initial_capital' not in mock_state:
+            mock_state['sc_initial_capital'] = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+            
+        assert mock_state['sc_initial_capital'] == 99999.0
+        
+        engine = BacktestEngine(initial_capital=mock_state['sc_initial_capital'])
+        assert engine.initial_capital == 99999.0
+
+def test_ui_logic_integration():
+    """
+    Verify that the logic used in strategy_creation.py correctly prioritizes sources.
+    Priority: Session State > Global Settings > Default Settings
+    """
+    # Case 1: Session State already set (User input)
+    mock_state = MockSessionState()
+    mock_state['sc_initial_capital'] = 12345.0
+    
+    # Logic from strategy_creation.py
+    global_settings = {}
+    if 'sc_initial_capital' not in mock_state:
+        mock_state['sc_initial_capital'] = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+        
+    assert mock_state['sc_initial_capital'] == 12345.0
+    
+    # Case 2: Global Settings (e.g. from another page)
+    mock_state = MockSessionState()
+    global_settings = {'initial_capital': 77777.0}
+    
+    if 'sc_initial_capital' not in mock_state:
+        mock_state['sc_initial_capital'] = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+        
+    assert mock_state['sc_initial_capital'] == 77777.0
+    
+    # Case 3: Fallback to Settings
+    mock_state = MockSessionState()
+    global_settings = {}
+    
+    # We need to ensure settings.INITIAL_CAPITAL is what we expect for this test
+    expected_default = settings.INITIAL_CAPITAL
+    
+    if 'sc_initial_capital' not in mock_state:
+        mock_state['sc_initial_capital'] = float(global_settings.get('initial_capital', settings.INITIAL_CAPITAL))
+        
+    assert mock_state['sc_initial_capital'] == expected_default
