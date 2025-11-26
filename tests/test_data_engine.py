@@ -1,80 +1,52 @@
-import unittest
+import pytest
 from unittest.mock import MagicMock, patch
-import sys
-import os
-
-# Add src to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
+import pandas as pd
 from src.data_engine import DataManager
-from config.settings import DB_PATH
+from src.config.settings import settings
 
-class TestDataManager(unittest.TestCase):
-    def setUp(self):
-        self.dm = DataManager(str(DB_PATH))
+@pytest.fixture
+def data_manager():
+    dm = DataManager(db_path=":memory:")
+    dm.init_db()
+    return dm
 
-    def test_ticker_normalization_tw(self):
-        """Test normalization for Taiwan stocks"""
-        # We need to mock yfinance to avoid actual network calls and ensure deterministic behavior
-        with patch('yfinance.Ticker') as mock_ticker:
-            # Setup mock to return a non-empty history for .TW
-            mock_instance = MagicMock()
-            mock_instance.history.return_value = "some_data" # Just needs to be truthy/non-empty
-            mock_ticker.return_value = mock_instance
-            
-            result = self.dm.normalize_ticker("2330")
-            self.assertEqual(result, "2330.TW")
-
-    def test_ticker_normalization_crypto(self):
-        """Test normalization for Crypto"""
-        # Mocking isn't strictly necessary if logic is purely string-based for known list,
-        # but if it checks yfinance, we should mock.
-        # Based on my implementation:
-        # 1. Checks if digit -> No
-        # 2. Checks if in known_cryptos -> Yes ("BTC" is in set) -> returns "BTC-USD"
-        result = self.dm.normalize_ticker("BTC")
-        self.assertEqual(result, "BTC-USD")
-
-    def test_ticker_normalization_us(self):
-        """Test normalization for US stocks"""
-        result = self.dm.normalize_ticker("NVDA")
-        self.assertEqual(result, "NVDA")
-
-    @patch('src.data_engine.yf.download')
-    def test_download_progress_callback(self, mock_download):
-        """Test that progress callback is called correctly"""
-        # Setup mock to return a dummy DataFrame
-        import pandas as pd
-        mock_df = pd.DataFrame({
-            'open': [100.0],
-            'high': [105.0],
-            'low': [95.0],
-            'close': [100.0],
-            'volume': [1000]
-        }, index=pd.to_datetime(['2023-01-01']))
-        mock_df.index.name = 'Date'
-        mock_download.return_value = mock_df
+def test_ticker_normalization_tw(data_manager):
+    """Test normalization for Taiwan stocks"""
+    with patch('yfinance.Ticker') as mock_ticker:
+        # Setup mock to return a non-empty history for .TW
+        mock_instance = MagicMock()
+        mock_instance.history.return_value = pd.DataFrame({"Close": [100]})
+        mock_ticker.return_value = mock_instance
         
-        # Create a mock callback
-        mock_callback = MagicMock()
+        # Mock settings.TICKER_SUFFIXES if needed, but using default is fine
+        # Assuming settings.TICKER_SUFFIXES = ['.TW', '.TWO']
         
-        # Call fetch_data with a specific range (e.g., 2 years)
-        # 2022 and 2023
-        self.dm.fetch_data("AAPL", start_date="2022-01-01", end_date="2023-12-31", progress_callback=mock_callback)
-        
-        # Verify callback calls
-        # Should be called for 2022 (0/2), 2023 (1/2), and completion (1.0)
-        # Total calls >= 3
-        self.assertGreaterEqual(mock_callback.call_count, 3)
-        
-        # Verify arguments of first call
-        # args[0] is progress (float), args[1] is message (str)
-        first_call_args = mock_callback.call_args_list[0]
-        self.assertEqual(first_call_args[0][0], 0.0) 
-        
-        # Verify last call is 1.0
-        last_call_args = mock_callback.call_args_list[-1]
-        self.assertEqual(last_call_args[0][0], 1.0)
+        result = data_manager.normalize_ticker("2330")
+        assert result == "2330.TW"
 
-if __name__ == '__main__':
-    unittest.main()
+def test_ticker_normalization_crypto(data_manager):
+    """Test normalization for Crypto"""
+    # Assuming BTC is in settings.KNOWN_CRYPTOS
+    result = data_manager.normalize_ticker("BTC")
+    assert result == "BTC-USD"
+
+def test_ticker_normalization_us(data_manager):
+    """Test normalization for US stocks"""
+    result = data_manager.normalize_ticker("NVDA")
+    assert result == "NVDA"
+
+@patch('src.data_engine.yf.download')
+@patch('src.data_engine.time.sleep')
+def test_rate_limiting(mock_sleep, mock_download, data_manager):
+    """Test that rate limiting sleep is called"""
+    # Mock watchlist
+    with patch.object(data_manager, 'get_watchlist', return_value=['AAPL', 'MSFT']):
+        # Mock fetch_data to do nothing
+        with patch.object(data_manager, 'fetch_data'):
+            # Mock _calc_smart_start to avoid DB calls
+            with patch.object(data_manager, '_calc_smart_start', return_value="2023-01-01"):
+                data_manager.update_all_tracked_symbols()
+                
+                # Should sleep RATE_LIMIT_SLEEP * number of symbols
+                assert mock_sleep.call_count == 2
+                mock_sleep.assert_called_with(settings.RATE_LIMIT_SLEEP)

@@ -1,6 +1,18 @@
 import sys
 import os
+import logging
 from pathlib import Path
+from src.config.settings import settings
+
+def setup_logging(name: str = __name__) -> logging.Logger:
+    """
+    Configure and return a logger instance with standardized settings.
+    """
+    logging.basicConfig(
+        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
+        format=settings.LOG_FORMAT
+    )
+    return logging.getLogger(name)
 
 def sanitize_ticker(ticker: str) -> str:
     """

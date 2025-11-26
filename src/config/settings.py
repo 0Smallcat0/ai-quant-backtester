@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     DEFAULT_TIMEOUT: float = 30.0
     MAX_RETRIES: int = 3
     RETRY_BACKOFF_FACTOR: float = 2.0
+    RATE_LIMIT_SLEEP: float = 0.5
+    TICKER_SUFFIXES: list = ['.TW', '.TWO']
+
+    # Logging Configuration
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "%(asctime)s - %(levelname)s - %(message)s"
 
     # Backtest Engine Settings
     MIN_EXPOSURE_THRESHOLD: float = 0.001  # 0.1% of Equity

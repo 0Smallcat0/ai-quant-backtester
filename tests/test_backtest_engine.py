@@ -175,3 +175,68 @@ def test_long_only_prevention(mock_price_data):
     trades = engine.trades
     assert len(trades) == 0, "Should not execute any trades (no shorting allowed)"
     assert engine.position == 0
+
+def test_zero_price_handling():
+    """
+    Test Case 7: Zero Price Handling
+    Scenario: Price is 0 on execution day.
+    Expected: Should not execute trade.
+    """
+    dates = pd.date_range(start="2023-01-01", periods=3, freq="D")
+    data = pd.DataFrame({
+        "Open": [100.0, 100.0, 0.0], # Day 3 Open is 0
+        "High": [105.0, 105.0, 0.0],
+        "Low": [95.0, 95.0, 0.0],
+        "Close": [100.0, 100.0, 0.0],
+        "Volume": [1000, 1000, 0]
+    }, index=dates)
+    
+    engine = BacktestEngine(initial_capital=10000)
+    
+    # Signal on Day 2 (Price 100) -> Execute Day 3 (Price 0)
+    signals = pd.Series([0, 1, 0], index=dates) 
+    
+    engine.run(data, signals)
+    
+    trades = engine.trades
+    # Should not have bought at 0
+    assert len(trades) == 0
+
+def test_extreme_signals():
+    """
+    Test Case 9: Extreme Signals
+    Scenario: Signal is Inf or NaN.
+    Expected: Should be treated as 0 or ignored.
+    """
+    dates = pd.date_range(start="2023-01-01", periods=3, freq="D")
+    data = pd.DataFrame({
+        "Open": [100.0, 100.0, 100.0],
+        "High": [105.0, 105.0, 105.0],
+        "Low": [95.0, 95.0, 95.0],
+        "Close": [100.0, 100.0, 100.0],
+        "Volume": [1000, 1000, 1000]
+    }, index=dates)
+    
+    engine = BacktestEngine(initial_capital=10000)
+    
+    # Signal on Day 1 is Inf
+    signals = pd.Series([np.inf, 0, 0], index=dates)
+    
+    # Should raise ValueError due to infinite values
+    with pytest.raises(ValueError, match="Input data contains Infinite values"):
+        engine.run(data, signals)
+
+def test_empty_data_handling():
+    """
+    Test Case 8: Empty Data Handling
+    Scenario: Empty DataFrame passed.
+    Expected: Graceful exit, no trades.
+    """
+    data = pd.DataFrame()
+    signals = pd.Series(dtype=float)
+    
+    engine = BacktestEngine()
+    engine.run(data, signals)
+    
+    assert len(engine.trades) == 0
+    assert len(engine.equity_curve) == 0

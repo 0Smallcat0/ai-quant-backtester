@@ -74,27 +74,19 @@ class DataManager:
             
             # Check if it's a Taiwan stock (numeric, 4 digits)
             if ticker.isdigit() and len(ticker) == 4:
-                # Try .TW first
-                test_ticker = f"{ticker}.TW"
-                try:
-                    # Fast check with history
-                    hist = yf.Ticker(test_ticker).history(period='1d')
-                    if not hist.empty:
-                        return test_ticker
-                except:
-                    pass
+                # Try suffixes from settings
+                for suffix in settings.TICKER_SUFFIXES:
+                    test_ticker = f"{ticker}{suffix}"
+                    try:
+                        # Fast check with history
+                        hist = yf.Ticker(test_ticker).history(period='1d')
+                        if not hist.empty:
+                            return test_ticker
+                    except:
+                        pass
                 
-                # Try .TWO
-                test_ticker = f"{ticker}.TWO"
-                try:
-                    hist = yf.Ticker(test_ticker).history(period='1d')
-                    if not hist.empty:
-                        return test_ticker
-                except:
-                    pass
-                
-                # Default to .TW if check fails but looks like TW stock
-                return f"{ticker}.TW"
+                # Default to first suffix if check fails but looks like TW stock
+                return f"{ticker}{settings.TICKER_SUFFIXES[0]}"
 
             # Check if it's likely a Crypto (e.g., BTC, ETH) and not a standard US ticker
             if ticker in settings.KNOWN_CRYPTOS:
@@ -102,8 +94,8 @@ class DataManager:
 
             return ticker
         except Exception as e:
-            print(f"Warning: normalize_ticker failed for {ticker}: {e}. Defaulting to {ticker}.TW")
-            return f"{ticker}.TW"
+            print(f"Warning: normalize_ticker failed for {ticker}: {e}. Defaulting to {ticker}{settings.TICKER_SUFFIXES[0]}")
+            return f"{ticker}{settings.TICKER_SUFFIXES[0]}"
 
     def _calc_smart_start(self, ticker: str) -> str:
         """
@@ -452,7 +444,7 @@ class DataManager:
             self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None) # Internal progress handled?
             
             # Sleep to avoid rate limit
-            time.sleep(0.5)
+            time.sleep(settings.RATE_LIMIT_SLEEP)
 
         if progress_callback:
             progress_callback(1.0, "All symbols updated.")

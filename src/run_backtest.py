@@ -31,8 +31,12 @@ def main():
     args = parser.parse_args()
     
     # Configure Logging
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    logger = logging.getLogger(__name__)
+    try:
+        from src.utils import setup_logging
+    except ImportError:
+        from utils import setup_logging
+        
+    logger = setup_logging(__name__)
     
     # [FIX] Sanitize arguments by stripping quotes
     if args.ticker:
