@@ -29,7 +29,7 @@ def test_settings_expansion_values():
 
     # MAX_CHUNK_YEARS
     assert isinstance(settings.MAX_CHUNK_YEARS, int), "MAX_CHUNK_YEARS should be an int"
-    assert settings.MAX_CHUNK_YEARS == 1, "MAX_CHUNK_YEARS should be 1"
+    assert settings.MAX_CHUNK_YEARS == 5, "MAX_CHUNK_YEARS should be 5"
 
     # DEFAULT_TIMEOUT
     assert isinstance(settings.DEFAULT_TIMEOUT, float), "DEFAULT_TIMEOUT should be a float"

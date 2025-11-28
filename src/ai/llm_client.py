@@ -253,9 +253,13 @@ class LLMClient:
         
         try:
             import streamlit as st
-            if 'llm_model' in st.session_state and st.session_state['llm_model']:
-                final_model = str(st.session_state['llm_model'])
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            if get_script_run_ctx():
+                if 'llm_model' in st.session_state and st.session_state['llm_model']:
+                    final_model = str(st.session_state['llm_model'])
         except ImportError:
+            pass
+        except Exception:
             pass
 
         # 2. If not in session state, check env vars

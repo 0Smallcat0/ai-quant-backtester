@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 from src.ui.plotting import plot_price_history
 from src.utils import categorize_ticker
+from src.data.news_fetcher import NewsFetcher
 
 def _categorize_tickers(watchlist):
     categories = {
@@ -34,6 +35,17 @@ def _categorize_tickers(watchlist):
     categories['Other'].sort()
     
     return categories
+
+def _detect_market(ticker: str) -> str:
+    """
+    Simple helper to detect market type for news fetching.
+    """
+    if ticker.endswith('.TW') or ticker.endswith('.TWO'):
+        return 'TW'
+    elif '-' in ticker:
+        return 'CRYPTO'
+    else:
+        return 'US'
 
 def render_data_management_page(dm):
     """
@@ -213,6 +225,30 @@ def render_data_management_page(dm):
                 
             with tab2:
                 st.dataframe(df.sort_index(ascending=False))
+                
+            # [NEW] Live News Check
+            st.divider()
+            with st.expander("📰 最近 5 則新聞預覽 (Live Check)"):
+                if st.button("取得最新新聞", key=f"btn_news_{selected_ticker}"):
+                    with st.spinner("正在連線至 Google News RSS..."):
+                        try:
+                            market_type = _detect_market(selected_ticker)
+                            fetcher = NewsFetcher()
+                            news_items = fetcher.fetch_headlines(selected_ticker, market=market_type)
+                            
+                            if not news_items:
+                                st.warning("⚠️ 查無新聞 (或是連線被阻擋)")
+                            else:
+                                # Only show top 5 as requested
+                                for item in news_items[:5]:
+                                    # 顯示標題與連結
+                                    st.markdown(f"**[{item['title']}]({item['link']})**")
+                                    st.caption(f"發布時間: {item.get('published', 'Unknown')}")
+                                    st.divider()
+                        except Exception as e:
+                            st.error(f"新聞抓取失敗: {str(e)}")
+                else:
+                    st.info("點擊按鈕以測試新聞抓取功能")
         else:
             st.warning(f"No data found for {selected_ticker}. Please run 'Update All Data'.")
     else:

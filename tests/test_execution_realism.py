@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from src.backtest_engine import BacktestEngine
-from config.settings import INITIAL_CAPITAL
+from src.config.settings import settings
 
 class TestExecutionRealism:
     def test_slippage_impact(self):

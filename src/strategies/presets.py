@@ -35,18 +35,20 @@ class MovingAverageStrategy(Strategy):
         
         return self.data
 
-class RSIStrategy(Strategy):
+class SentimentRSIStrategy(Strategy):
     """
-    RSI Mean Reversion Strategy.
+    RSI Mean Reversion Strategy with Sentiment Filter.
     Uses Wilder's Smoothing (Standard RSI).
-    Buy when RSI < buy_threshold (oversold).
+    Buy when RSI < buy_threshold (oversold) AND Sentiment >= sentiment_threshold.
     Sell when RSI > sell_threshold (overbought).
     """
-    def __init__(self, period: int = settings.DEFAULT_RSI_PERIOD, buy_threshold: int = settings.DEFAULT_RSI_BUY_THRESHOLD, sell_threshold: int = settings.DEFAULT_RSI_SELL_THRESHOLD):
+    def __init__(self, period: int = settings.DEFAULT_RSI_PERIOD, buy_threshold: int = settings.DEFAULT_RSI_BUY_THRESHOLD, sell_threshold: int = settings.DEFAULT_RSI_SELL_THRESHOLD, sentiment_threshold: float = 0.0):
         super().__init__()
         self.period = period
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
+        self.sentiment_threshold = sentiment_threshold
+        self.name = "SentimentRSI"
 
     def _calculate_rsi(self, series: pd.Series, period: int) -> pd.Series:
         # [SAFETY] Use shifted data to prevent look-ahead bias (consistent with safe_rolling)
@@ -75,9 +77,17 @@ class RSIStrategy(Strategy):
             
         self.data['rsi'] = self._calculate_rsi(self.data['close'], self.period)
         
+        # Handle Sentiment
+        if 'sentiment' not in self.data.columns:
+            self.data['sentiment'] = 0.0 # Default to neutral if missing
+        
         self.data['signal'] = 0
-        # Buy (Oversold)
-        self.data.loc[self.data['rsi'] < self.buy_threshold, 'signal'] = 1
+        
+        # Buy (Oversold AND Sentiment Check)
+        # Condition: RSI < Threshold AND Sentiment >= Sentiment Threshold
+        buy_condition = (self.data['rsi'] < self.buy_threshold) & (self.data['sentiment'] >= self.sentiment_threshold)
+        self.data.loc[buy_condition, 'signal'] = 1
+        
         # Sell (Overbought)
         self.data.loc[self.data['rsi'] > self.sell_threshold, 'signal'] = -1
         
@@ -123,6 +133,6 @@ class BollingerBreakoutStrategy(Strategy):
 
 PRESET_STRATEGIES = {
     "MovingAverageStrategy": MovingAverageStrategy,
-    "RSIStrategy": RSIStrategy,
+    "SentimentRSIStrategy": SentimentRSIStrategy,
     "BollingerBreakoutStrategy": BollingerBreakoutStrategy
 }

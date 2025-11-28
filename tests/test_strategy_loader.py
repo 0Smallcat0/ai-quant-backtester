@@ -15,10 +15,10 @@ class TestStrategyLoader(unittest.TestCase):
         self.assertEqual(strategy.window, 20)
 
     def test_load_preset_rsi(self):
-        """Test loading the RSIStrategy preset."""
-        strategy = self.loader.load_preset("RSIStrategy", period=14, buy_threshold=30, sell_threshold=70)
+        """Test loading the SentimentRSIStrategy preset."""
+        strategy = self.loader.load_preset("SentimentRSIStrategy", period=14)
         self.assertIsInstance(strategy, Strategy)
-        self.assertEqual(strategy.__class__.__name__, "RSIStrategy")
+        self.assertEqual(strategy.__class__.__name__, "SentimentRSIStrategy")
         self.assertEqual(strategy.period, 14)
 
     def test_preset_execution_interface(self):

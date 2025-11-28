@@ -78,7 +78,7 @@ def render_strategy_creation_page(dm):
     if "generated_code" not in st.session_state:
         st.session_state.generated_code = ""
     if "strategy_description" not in st.session_state:
-        st.session_state.strategy_description = "RSI < 30 Buy, RSI > 70 Sell"
+        st.session_state.strategy_description = "RSI < 30 and Sentiment >= 0 Buy, RSI > 70 Sell"
     if "strategy_mode" not in st.session_state:
         st.session_state.strategy_mode = "Preset Strategy"
 
@@ -96,7 +96,7 @@ def render_strategy_creation_page(dm):
         
         manager = StrategyManager()
         custom_strategies = manager.list_all()
-        system_presets = ["MovingAverageStrategy", "RSIStrategy"]
+        system_presets = ["MovingAverageStrategy", "SentimentRSIStrategy"]
         all_strategies = system_presets + custom_strategies
         
         preset_name = st.selectbox("Strategy Type", all_strategies)
@@ -110,7 +110,7 @@ def render_strategy_creation_page(dm):
         
         if preset_name == "MovingAverageStrategy":
             preset_params['window'] = st.number_input("Window Size", min_value=1, value=settings.DEFAULT_MA_WINDOW)
-        elif preset_name == "RSIStrategy":
+        elif preset_name == "SentimentRSIStrategy":
             c1, c2, c3 = st.columns(3)
             preset_params['period'] = c1.number_input("RSI Period", min_value=1, value=settings.DEFAULT_RSI_PERIOD)
             preset_params['buy_threshold'] = c2.number_input("Buy Threshold", min_value=1, max_value=100, value=settings.DEFAULT_RSI_BUY_THRESHOLD)

@@ -11,14 +11,14 @@ CLI_SCRIPT = os.path.join("src", "run_backtest.py")
 # Add src to python path to allow imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from src.data_engine import DataManager
-from config.settings import DB_PATH
+from src.config.settings import settings
 
 @pytest.fixture(scope="module")
 def setup_data():
     """
     Populate DB with dummy data for testing.
     """
-    dm = DataManager(db_path=str(DB_PATH))
+    dm = DataManager(db_path=str(settings.DB_PATH))
     dm.init_db()
     
     # Create dummy data for BTC-USD
@@ -75,7 +75,12 @@ def test_run_strategy_success(setup_data):
     if not os.path.exists(CLI_SCRIPT):
         pytest.fail(f"CLI script not found at {CLI_SCRIPT}")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # [FIX] Add project root to PYTHONPATH for the subprocess
+    env = os.environ.copy()
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     
     assert result.returncode == 0, f"Script failed with stderr: {result.stderr}"
     
@@ -102,7 +107,12 @@ def test_run_strategy_invalid():
         "--ticker", "BTC-USD"
     ]
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # [FIX] Add project root to PYTHONPATH for the subprocess
+    env = os.environ.copy()
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     
     assert result.returncode != 0, "Script should have failed for invalid strategy"
     assert result.returncode != 0, "Script should have failed for invalid strategy"
@@ -124,7 +134,12 @@ def test_run_strategy_no_json_flag(setup_data):
         "--end", "2020-02-01"
     ]
     
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # [FIX] Add project root to PYTHONPATH for the subprocess
+    env = os.environ.copy()
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     
     assert result.returncode == 0
     assert "cagr" in result.stdout

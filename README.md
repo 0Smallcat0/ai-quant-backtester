@@ -1,14 +1,38 @@
-# AI-Driven Quantitative Backtesting Engine (v1.0.0)
+# AI-Driven Quantitative Backtesting Engine (v1.1)
 
-A professional-grade, event-driven backtesting engine designed for AI-generated trading strategies. It features strict financial realism, anti-lookahead architecture, and a modern Streamlit UI.
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 
-## 🔥 New Features in v1.1 (Stable)
+## Introduction
 
-*   **CLI Automation**: Run backtests directly from the terminal using `python src/run_backtest.py`.
-*   **Dynamic Strategy Discovery**: Automatically detects and loads new strategy files in `src/strategies/`.
-*   **Anti-Lookahead Architecture**: Enforces strict T+1 execution lag to prevent future data leakage.
-*   **Realistic Execution**: Built-in Slippage, Commission models, and Bankruptcy protection.
-*   **Single Source of Truth (SSOT)**: Centralized configuration in `src/config/settings.py`.
+This is a professional-grade **Quantitative Backtesting System** integrated with **LLM-driven Sentiment Analysis**. Unlike traditional backtesters that rely solely on price action, this engine combines rigorous financial logic (T+1 execution, bankruptcy protection) with real-time news impact analysis to simulate how market sentiment affects trading strategies.
+
+## ✨ New Features in v1.1
+
+### 📰 News Sentiment Engine
+A sophisticated pipeline for real-time market intelligence:
+*   **Multi-Source Aggregation**: Aggregates news from Google News RSS across **TW** (Taiwan), **US** (Wall St.), and **Crypto** markets.
+*   **Funnel Filtering**: Automatically filters out noise (e.g., "Top 10 Stocks", "Market Wrap") to focus on actionable news.
+*   **Impact Ranking (SSOT)**: 
+    *   Prioritizes high-impact events like **Earnings (EPS)**, **Mergers**, and **Regulatory Actions**.
+    *   Uses a weighted scoring algorithm configurable via `src/config/settings.py`.
+*   **LLM Analysis**: Uses GPT-4 to summarize news and assign a sentiment score (-1.0 to +1.0).
+*   **Exponential Decay**: Simulates the "memory" of the market with a 3-day half-life for sentiment scores.
+*   **Timezone Alignment**: Handles global market hours and news rollover logic (e.g., post-market news affects the next trading day).
+
+### 🧠 Sentiment-Weighted Strategies
+*   **SentimentRSI**: An enhanced RSI strategy that adjusts entry/exit thresholds based on the aggregated sentiment score, preventing "buying the dip" during catastrophic news events.
+
+### ⚙️ Robust Architecture
+*   **SSOT Configuration**: All critical parameters (Keywords, Timezones, Risk Limits) are centralized in `src/config/settings.py`.
+*   **Strict Backtesting**: 
+    *   **Target-Delta Execution**: Prevents "Zombie Shorts" and infinite leverage bugs.
+    *   **Bankruptcy Protection**: Automatically halts trading if equity hits zero.
+    *   **Long-Only Compliance**: Enforced at the engine level for spot markets.
+
+## ⚠️ Known Limitations
+
+> **Historical Data Limitation**
+> The News Sentiment Engine relies on **live RSS feeds**. Historical backtests (e.g., 2020-2023) will default to **Neutral Sentiment (0.0)** due to the unavailability of historical RSS data. This feature is optimized for **Live Monitoring** and **Paper Trading**.
 
 ## 🚀 Quick Start
 
@@ -17,73 +41,18 @@ A professional-grade, event-driven backtesting engine designed for AI-generated 
 pip install -r requirements.txt
 ```
 
-### 2. Run the UI
+### 2. Configuration
+Copy the example environment file and set your OpenAI API Key:
+```bash
+cp .env.example .env
+# Edit .env and add your API_KEY
+```
+
+### 3. Launch
+Start the Streamlit dashboard:
 ```bash
 streamlit run app.py
 ```
-Navigate to **Data Management** to fetch data (e.g., `BTC-USD`), then **Strategy & Backtest** to run simulations.
 
-### 3. Run via CLI (Automation)
-```bash
-# Run a preset strategy
-python src/run_backtest.py --strategy_name MA_Crossover --ticker BTC-USD --start 2023-01-01
-
-# Run a custom strategy (must exist in src/strategies/)
-python src/run_backtest.py --strategy_name MyCustomStrategy --ticker ETH-USD
-```
-
-## 📚 Developer Guide
-
-### Writing a Strategy
-Create a new file in `src/strategies/` (e.g., `my_strategy.py`). Inherit from `Strategy` and implement `generate_signals`.
-
-```python
-from src.strategies.base import Strategy
-import pandas as pd
-
-class MyStrategy(Strategy):
-    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        df = data.copy()
-        # Use safe_rolling helper if available, or standard pandas
-        df['ma'] = df['close'].rolling(20).mean()
-        
-        df['signal'] = 0
-        df.loc[df['close'] > df['ma'], 'signal'] = 1 # Long
-        
-        return df
-```
-
-### Anti-Lookahead Rules
-1.  **T+1 Execution**: Signals generated on Day T (using Close price) are executed on Day T+1 (Open price).
-2.  **Forbidden Patterns**: The loader blocks code containing `.shift(-1)` or future slicing `iloc[i+1]`.
-
-### Stress Testing
-You can use the CLI to run stress tests by specifying different date ranges or tickers.
-```bash
-# Bull Market Stress Test
-python src/run_backtest.py --strategy_name RSI_Strategy --start 2020-01-01 --end 2021-01-01
-
-# Bear Market Stress Test
-python src/run_backtest.py --strategy_name RSI_Strategy --start 2022-01-01 --end 2023-01-01
-```
-
-## 📂 Project Structure
-```
-.
-├── app.py                  # Streamlit Entrypoint
-├── src/
-│   ├── backtest_engine.py  # Core Event-Driven Engine (T+1, Slippage)
-│   ├── data_engine.py      # SQLite Data Management
-│   ├── run_backtest.py     # CLI Entrypoint
-│   ├── config/
-│   │   └── settings.py     # SSOT Configuration
-│   ├── strategies/
-│   │   ├── base.py         # Abstract Base Class
-│   │   ├── loader.py       # Dynamic Loader & Security Validator
-│   │   └── presets.py      # Standard Strategies
-│   └── ui/                 # Streamlit Components
-└── tests/                  # Pytest Suite
-```
-
-## 🤝 Contributing
-Please read `CONTRIBUTING.md` before submitting changes. We follow strict TDD and Financial Realism protocols.
+---
+*Built with ❤️ by the AI Quant Team*

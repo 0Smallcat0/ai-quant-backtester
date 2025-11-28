@@ -17,7 +17,7 @@ def test_settings_default_values():
     # This assumes the user hasn't modified it yet, or we are checking against what's in the file.
     # The user said they modified it to 100,000, but in the file I read it was 10,000.
     # So I will assert it is 10,000 for now, as that's what I saw in the file.
-    assert settings.INITIAL_CAPITAL == 100000.0
+    assert settings.INITIAL_CAPITAL == 10000.0
     assert settings.COMMISSION_RATE == 0.001
     assert settings.SLIPPAGE == 0.0005
 

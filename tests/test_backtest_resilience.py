@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 from src.backtest_engine import BacktestEngine, Trade
-from config.settings import EPSILON
+from src.config.settings import settings
 
 @pytest.fixture
 def mock_data():
@@ -112,7 +112,7 @@ def test_oversell_protection(mock_data):
     # The sell happens on Day 6 (index 6)
     # We want to ensure position is exactly 0.0 or at least non-negative
     assert engine.position >= 0.0
-    assert abs(engine.position) < EPSILON
+    assert abs(engine.position) < settings.EPSILON
     
     # Check trades for negative quantities
     for trade in engine.trades:

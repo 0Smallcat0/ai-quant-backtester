@@ -10,10 +10,12 @@ from typing import Optional, List, Callable, Any
 from typing import Optional, List, Callable, Any
 from src.utils import sanitize_ticker
 from src.config.settings import settings
+from src.data.news_engine import NewsEngine
 
 class DataManager:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, news_engine: Optional[Any] = None):
         self.db_path = db_path
+        self.news_engine = news_engine
 
     def get_connection(self) -> sqlite3.Connection:
         # [SAFETY] Increased timeout to prevent 'database is locked' errors
@@ -73,7 +75,7 @@ class DataManager:
             # [FIX] Sanitize ticker
             ticker = sanitize_ticker(ticker)
             
-            # Check if it's a Taiwan stock (numeric, 4 digits)
+            # Check if it's a Taiwan stock (numeric, 4-6 digits + optional letter)
             if re.match(settings.TW_STOCK_PATTERN, ticker):
                 # Try suffixes from settings
                 for suffix in settings.TICKER_SUFFIXES:
@@ -306,7 +308,7 @@ class DataManager:
             conn.close()
 
 
-    def get_data(self, ticker: str) -> pd.DataFrame:
+    def get_data(self, ticker: str, include_sentiment: bool = False) -> pd.DataFrame:
         """Load data from DB for a specific ticker."""
         # [FIX] Sanitize ticker
         ticker = sanitize_ticker(ticker)
@@ -348,6 +350,29 @@ class DataManager:
             else:
                 # Fallback if no price columns (unlikely)
                 df = df.dropna()
+
+            # [NEW] Integrate Sentiment
+            if include_sentiment:
+                try:
+                    # Use injected engine or lazy load
+                    engine = self.news_engine if self.news_engine else NewsEngine()
+                    start_date = df.index.min().strftime('%Y-%m-%d')
+                    end_date = df.index.max().strftime('%Y-%m-%d')
+                    
+                    sentiment_series = engine.get_sentiment(ticker, start_date, end_date)
+                    
+                    # Merge (Left Join)
+                    df = df.join(sentiment_series, how='left')
+                    
+                    # Fill NaNs with 0.0 (Neutral)
+                    if 'sentiment' in df.columns:
+                        df['sentiment'] = df['sentiment'].fillna(0.0)
+                    else:
+                        df['sentiment'] = 0.0
+                        
+                except Exception as e:
+                    print(f"Warning: Failed to integrate sentiment for {ticker}: {e}")
+                    df['sentiment'] = 0.0
         
         # [ROBUSTNESS] Empty Guard
         if df.empty:

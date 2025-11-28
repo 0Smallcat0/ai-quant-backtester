@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 import numpy as np
-from src.strategies.presets import MovingAverageStrategy, RSIStrategy, BollingerBreakoutStrategy
+from src.strategies.presets import MovingAverageStrategy, SentimentRSIStrategy, BollingerBreakoutStrategy
 from src.strategies.base import Strategy
 
 def test_presets_inheritance():
@@ -10,7 +10,7 @@ def test_presets_inheritance():
     Verify all strategies inherit from Strategy base class.
     """
     assert issubclass(MovingAverageStrategy, Strategy)
-    assert issubclass(RSIStrategy, Strategy)
+    assert issubclass(SentimentRSIStrategy, Strategy)
     assert issubclass(BollingerBreakoutStrategy, Strategy)
 
 def test_sma_safety_lookahead():
@@ -64,7 +64,7 @@ def test_rsi_calculation_manual():
     data = pd.DataFrame({'close': range(20)}, index=dates)
     
     period = 14
-    strategy = RSIStrategy(period=period)
+    strategy = SentimentRSIStrategy(period=period)
     signals = strategy.generate_signals(data)
     
     # Check RSI exists

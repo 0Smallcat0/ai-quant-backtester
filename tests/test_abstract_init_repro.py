@@ -1,6 +1,6 @@
 import pytest
 from src.strategies.base import Strategy
-from src.strategies.presets import RSIStrategy
+from src.strategies.presets import SentimentRSIStrategy
 import pandas as pd
 
 class TestAbstractInitRepro:
@@ -9,10 +9,10 @@ class TestAbstractInitRepro:
         Test if existing presets can be instantiated.
         """
         try:
-            strategy = RSIStrategy()
+            strategy = SentimentRSIStrategy()
             assert isinstance(strategy, Strategy)
         except TypeError as e:
-            pytest.fail(f"Failed to instantiate RSIStrategy: {e}")
+            pytest.fail(f"Failed to instantiate SentimentRSIStrategy: {e}")
 
     def test_dynamic_strategy_without_init(self):
         """

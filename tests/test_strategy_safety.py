@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from src.strategies.loader import StrategyLoader, StrategyLoadError
 from src.strategies.manager import StrategyManager
-from src.strategies.presets import RSIStrategy, MovingAverageStrategy, BollingerBreakoutStrategy
+from src.strategies.presets import SentimentRSIStrategy, MovingAverageStrategy, BollingerBreakoutStrategy
 
 class TestStrategySafety:
     def setup_method(self):
@@ -102,7 +102,7 @@ class MaliciousIndex(Strategy):
         
         # Test RSI
         # RSI period 14 > len 5
-        rsi_strategy = RSIStrategy(period=14)
+        rsi_strategy = SentimentRSIStrategy(period=14)
         signals_rsi = rsi_strategy.generate_signals(data)
         assert not signals_rsi['signal'].isnull().any(), "RSI Strategy returned NaNs in signal"
         

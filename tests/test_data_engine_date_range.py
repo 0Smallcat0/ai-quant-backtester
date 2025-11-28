@@ -7,11 +7,11 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.data_engine import DataManager
-from config.settings import DB_PATH
+from src.config.settings import settings
 
 class TestDataManagerDateRange(unittest.TestCase):
     def setUp(self):
-        self.dm = DataManager(str(DB_PATH))
+        self.dm = DataManager(str(settings.DB_PATH))
 
     @patch('src.data_engine.DataManager.fetch_data')
     @patch('src.data_engine.DataManager.get_watchlist')
