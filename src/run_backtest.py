@@ -39,6 +39,7 @@ def main():
         from src.config.logging_config import setup_logging
         
     logger = setup_logging(__name__)
+    logger.info(f"Data Engine Mode: {settings.DATA_UPDATE_MODE}")
     
     # [FIX] Sanitize arguments by stripping quotes
     if args.ticker:

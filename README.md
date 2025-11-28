@@ -9,18 +9,26 @@ This is a professional-grade **Quantitative Backtesting System** integrated with
 ## ✨ New Features in v1.1
 
 ### 📰 News Sentiment Engine
-A sophisticated pipeline for real-time market intelligence:
-*   **Multi-Source Aggregation**: Aggregates news from Google News RSS across **TW** (Taiwan), **US** (Wall St.), and **Crypto** markets.
-*   **Funnel Filtering**: Automatically filters out noise (e.g., "Top 10 Stocks", "Market Wrap") to focus on actionable news.
-*   **Impact Ranking (SSOT)**: 
-    *   Prioritizes high-impact events like **Earnings (EPS)**, **Mergers**, and **Regulatory Actions**.
-    *   Uses a weighted scoring algorithm configurable via `src/config/settings.py`.
-*   **LLM Analysis**: Uses GPT-4 to summarize news and assign a sentiment score (-1.0 to +1.0).
-*   **Exponential Decay**: Simulates the "memory" of the market with a 3-day half-life for sentiment scores.
-*   **Timezone Alignment**: Handles global market hours and news rollover logic (e.g., post-market news affects the next trading day).
+## Features (v1.1)
 
-### 🧠 Sentiment-Weighted Strategies
-*   **SentimentRSI**: An enhanced RSI strategy that adjusts entry/exit thresholds based on the aggregated sentiment score, preventing "buying the dip" during catastrophic news events.
+### 1. Multi-Source Data Engine
+- **Sources**: Yahoo Finance (Global), Stooq (Global), TwStock (Taiwan), CCXT (Crypto).
+- **Resilience**: Automatic failover and retry logic.
+- **Verification Mode**: "FULL_VERIFY" mode to ensure data integrity before backtesting.
+
+### 2. Advanced Sentiment Engine v2.0
+- **Relevance Weighting**: Distinguishes between high-impact news (Earnings) and noise (Gossip).
+- **Superposition Decay**: Linear superposition algorithm handles overlapping news events correctly.
+- **LLM Integration**: Uses OpenAI GPT-4o for semantic analysis.
+
+### 3. Dynamic Strategy Engine
+- **Position Sizing**: Dynamic sizing based on sentiment strength (Risk-On/Risk-Off).
+- **Presets**: Built-in strategies (SentimentRSI, MovingAverage, BollingerBreakout).
+- **Backtest Engine**: Event-driven engine with Target-Delta execution and bankruptcy protection.
+
+### 4. Professional UI
+- **Streamlit Dashboard**: Interactive charts, logs, and configuration.
+- **Real-time Logs**: Streaming execution logs for transparency.
 
 ### ⚙️ Robust Architecture
 *   **SSOT Configuration**: All critical parameters (Keywords, Timezones, Risk Limits) are centralized in `src/config/settings.py`.

@@ -138,6 +138,20 @@ def render_data_management_page(dm):
     col_op1, col_op2 = st.columns([1, 3])
     
     with col_op1:
+        # [NEW] Update Strategy Selector
+        update_strategy = st.radio(
+            "Update Strategy",
+            ["Smart Incremental (Fast)", "Full Verification (Strict)"],
+            index=0,
+            help="Smart: Only fetch new data. Full: Re-download all and vote on conflicts."
+        )
+        
+        mode_map = {
+            "Smart Incremental (Fast)": "INCREMENTAL",
+            "Full Verification (Strict)": "FULL_VERIFY"
+        }
+        selected_mode = mode_map[update_strategy]
+        
         if st.button("🚀 Update All Data", type="primary", width="stretch"):
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -146,11 +160,12 @@ def render_data_management_page(dm):
                 progress_bar.progress(progress)
                 status_text.text(message)
                 
-            with st.spinner("Batch updating watchlist..."):
+            with st.spinner(f"Batch updating watchlist ({selected_mode})..."):
                 dm.update_all_tracked_symbols(
                     progress_callback=update_progress,
                     start_date=start_date.strftime('%Y-%m-%d'),
-                    end_date=end_date.strftime('%Y-%m-%d')
+                    end_date=end_date.strftime('%Y-%m-%d'),
+                    update_mode=selected_mode
                 )
             
             st.success("All data updated successfully!")

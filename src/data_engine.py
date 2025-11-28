@@ -424,18 +424,205 @@ class DataManager:
                 
         return df
 
-    def update_data_if_needed(self, ticker: str, progress_callback: Optional[Callable[[float, str], None]] = None) -> None:
-        """Check if data is stale and update if necessary."""
-        # [REFACTOR] Use _calc_smart_start
-        start_date = self._calc_smart_start(ticker)
-        
-        if start_date:
-            logger.info(f"Updating data for {ticker} from {start_date}...")
-            self.fetch_data(ticker, start_date=start_date, progress_callback=progress_callback)
+    def _get_backup_provider(self, ticker: str) -> Optional[Any]:
+        """
+        Get the appropriate backup provider for a ticker.
+        """
+        if ticker.endswith('.TW') or ticker.endswith('.TWO'):
+            return self.twstock_provider
+        elif ticker.endswith('-USD'):
+            return self.ccxt_provider
         else:
-            logger.info(f"Data for {ticker} is up to date.")
-            if progress_callback:
-                progress_callback(1.0, "Data is up to date.")
+            # Assume US stock
+            return self.stooq_provider
+
+    def update_data_if_needed(self, ticker: str, progress_callback: Optional[Callable[[float, str], None]] = None, update_mode: Optional[str] = None) -> None:
+        """Check if data is stale and update if necessary."""
+        
+        mode = update_mode if update_mode else settings.DATA_UPDATE_MODE
+        
+        if mode == "INCREMENTAL":
+            # [REFACTOR] Use _calc_smart_start
+            start_date = self._calc_smart_start(ticker)
+            
+            if start_date:
+                logger.info(f"Updating data for {ticker} from {start_date}...")
+                self.fetch_data(ticker, start_date=start_date, progress_callback=progress_callback)
+            else:
+                logger.info(f"Data for {ticker} is up to date.")
+                if progress_callback:
+                    progress_callback(1.0, "Data is up to date.")
+                    
+        elif mode == "FULL_VERIFY":
+            logger.info(f"Running FULL VERIFICATION for {ticker}...")
+            
+            # Step 1: Fetch Full History from Primary (YFinance)
+            # We use fetch_history directly to avoid auto-insertion
+            try:
+                # Use a very early start date for full history
+                df_new_pri = self.yf_provider.fetch_history(ticker, "2000-01-01", datetime.now().strftime('%Y-%m-%d'))
+            except Exception as e:
+                logger.error(f"Primary provider failed for {ticker}: {e}")
+                return
+
+            if df_new_pri.empty:
+                logger.warning(f"Primary provider returned empty data for {ticker}")
+                return
+                
+            # Normalize columns
+            df_new_pri.columns = [str(c).lower() for c in df_new_pri.columns]
+            df_new_pri.index.name = 'date'
+            
+            # Step 2: Load Old Data
+            try:
+                df_old = self.get_data(ticker)
+            except ValueError:
+                # No old data, just save new data
+                logger.info(f"No existing data for {ticker}. Saving new data.")
+                self.save_data(df_new_pri, ticker)
+                return
+
+            # Step 3: Compare
+            # Align indices
+            common_dates = df_old.index.intersection(df_new_pri.index)
+            
+            if common_dates.empty:
+                logger.info(f"No overlapping dates for {ticker}. Appending new data.")
+                self.save_data(df_new_pri, ticker)
+                return
+                
+            df_old_common = df_old.loc[common_dates]
+            df_new_pri_common = df_new_pri.loc[common_dates]
+            
+            # Check for differences
+            # We focus on OHLCV
+            cols_to_check = ['open', 'high', 'low', 'close', 'volume']
+            # Ensure columns exist
+            cols_to_check = [c for c in cols_to_check if c in df_old_common.columns and c in df_new_pri_common.columns]
+            
+            is_diff = False
+            try:
+                # Use numpy isclose for float comparison
+                # We need to handle NaNs carefully, but get_data cleans them.
+                # However, volume might be 0 vs NaN.
+                
+                # Simple check: absolute difference > tolerance
+                diff = (df_old_common[cols_to_check] - df_new_pri_common[cols_to_check]).abs()
+                if (diff > settings.DATA_DIFF_TOLERANCE).any().any():
+                    is_diff = True
+            except Exception as e:
+                logger.warning(f"Error comparing data: {e}. Assuming difference.")
+                is_diff = True
+                
+            if not is_diff:
+                logger.info(f"Data verification passed for {ticker}. Appending new data if any.")
+                # Save the whole new dataframe (it includes new dates)
+                # save_data uses INSERT OR REPLACE, so it's safe
+                self.save_data(df_new_pri, ticker)
+                return
+                
+            # Step 5: Conflict Resolution (Voting)
+            logger.warning(f"Data conflict detected for {ticker}. Initiating Voting...")
+            
+            backup_provider = self._get_backup_provider(ticker)
+            try:
+                df_new_bak = backup_provider.fetch_history(ticker, "2000-01-01", datetime.now().strftime('%Y-%m-%d'))
+                df_new_bak.columns = [str(c).lower() for c in df_new_bak.columns]
+                df_new_bak.index.name = 'date'
+            except Exception as e:
+                logger.error(f"Backup provider failed for {ticker}: {e}. Keeping old data where conflict exists.")
+                # We can still update new dates? 
+                # For safety, let's just abort update for conflicting rows and only add new rows?
+                # The requirement says "Keep Old" if backup fails (implied by Case D or inability to vote).
+                return
+
+            # Voting Logic
+            # We iterate over conflicting rows or just all common rows?
+            # Iterating all common rows is safer but slower.
+            # Let's iterate over rows where diff > tolerance
+            
+            # Re-calculate diff mask
+            # Align all three
+            common_dates_3 = common_dates.intersection(df_new_bak.index)
+            
+            fixed_count = 0
+            unresolved_count = 0
+            
+            # Prepare a list of updates
+            updates = []
+            
+            for date in common_dates_3:
+                row_old = df_old.loc[date]
+                row_pri = df_new_pri.loc[date]
+                row_bak = df_new_bak.loc[date]
+                
+                # Check if this row has conflict
+                row_diff = False
+                for col in cols_to_check:
+                    if abs(row_old[col] - row_pri[col]) > settings.DATA_DIFF_TOLERANCE:
+                        row_diff = True
+                        break
+                
+                if not row_diff:
+                    continue
+                    
+                # Voting
+                # Case A: New_Pri == New_Bak -> Update DB
+                pri_eq_bak = True
+                for col in cols_to_check:
+                    if abs(row_pri[col] - row_bak[col]) > settings.DATA_DIFF_TOLERANCE:
+                        pri_eq_bak = False
+                        break
+                
+                if pri_eq_bak:
+                    # Update DB with New_Pri
+                    updates.append(row_pri)
+                    fixed_count += 1
+                    continue
+                    
+                # Case B: New_Pri == Old -> Keep Old (Already in DB)
+                # Case C: New_Bak == Old -> Keep Old (Already in DB)
+                # Case D: All different -> Keep Old
+                
+                # We only need to act if we want to change DB.
+                # Since DB has Old, we only act in Case A.
+                
+                # But we should log unresolved
+                # Check if it's Case B or C to distinguish from D
+                pri_eq_old = True
+                for col in cols_to_check:
+                    if abs(row_pri[col] - row_old[col]) > settings.DATA_DIFF_TOLERANCE:
+                        pri_eq_old = False
+                        break
+                        
+                bak_eq_old = True
+                for col in cols_to_check:
+                    if abs(row_bak[col] - row_old[col]) > settings.DATA_DIFF_TOLERANCE:
+                        bak_eq_old = False
+                        break
+                        
+                if not pri_eq_old and not bak_eq_old:
+                    # Case D
+                    logger.error(f"Data Conflict Unresolved for {ticker} on {date}")
+                    unresolved_count += 1
+            
+            # Apply updates
+            if updates:
+                df_updates = pd.DataFrame(updates)
+                # [FIX] Restore index from Series names (dates)
+                df_updates.index = [s.name for s in updates]
+                df_updates.index.name = 'date'
+                
+                self.save_data(df_updates, ticker)
+                
+            # Also append completely new data (dates not in old)
+            new_dates = df_new_pri.index.difference(df_old.index)
+            if not new_dates.empty:
+                df_new_only = df_new_pri.loc[new_dates]
+                self.save_data(df_new_only, ticker)
+                
+            print(f"Verified {ticker}: {fixed_count} rows corrected, {unresolved_count} unresolved.")
+            logger.info(f"Verified {ticker}: {fixed_count} rows corrected, {unresolved_count} unresolved.")
 
     def add_to_watchlist(self, symbol: str) -> None:
         """Add a symbol to the watchlist."""
@@ -476,7 +663,7 @@ class DataManager:
         finally:
             conn.close()
 
-    def update_all_tracked_symbols(self, progress_callback: Optional[Callable[[float, str], None]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None) -> None:
+    def update_all_tracked_symbols(self, progress_callback: Optional[Callable[[float, str], None]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, update_mode: Optional[str] = None) -> None:
         """
         Update all symbols in the watchlist.
         Smart logic:
@@ -487,6 +674,7 @@ class DataManager:
         Overrides:
         - If start_date is provided, it overrides the smart start date logic.
         - If end_date is provided, it overrides the default end date (today).
+        - If update_mode is provided, it overrides the global setting.
         """
         watchlist = self.get_watchlist()
         if not watchlist:
@@ -512,9 +700,41 @@ class DataManager:
                     logger.info(f"{symbol} is up-to-date.")
                     continue
                 current_start_date = smart_start
-
-            logger.info(f"Updating {symbol} from {current_start_date}...")
-            self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None) # Internal progress handled?
+            
+            # Determine mode for logging
+            current_mode = update_mode if update_mode else settings.DATA_UPDATE_MODE
+            logger.info(f"Updating {symbol} from {current_start_date} (Mode: {current_mode})...")
+            
+            # Pass update_mode to update_data_if_needed logic
+            # Wait, update_data_if_needed calls fetch_data, but update_data_if_needed ALSO has the mode logic now.
+            # But here we are calling fetch_data directly if start_date is set?
+            # NO, update_all_tracked_symbols calls fetch_data directly in the original code.
+            # We need to change this to call update_data_if_needed OR handle mode here.
+            
+            # Actually, update_data_if_needed was the one I modified to have the logic.
+            # But update_all_tracked_symbols calls fetch_data directly:
+            # self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None)
+            
+            # This bypasses the verification logic in update_data_if_needed!
+            # I need to refactor update_all_tracked_symbols to use update_data_if_needed OR duplicate the logic?
+            # Better to use update_data_if_needed, but update_data_if_needed calculates start date internally.
+            
+            # If I want to support start_date override AND verification, I should probably pass start_date to update_data_if_needed?
+            # But update_data_if_needed signature is (ticker, progress_callback, update_mode).
+            # It doesn't take start_date.
+            
+            # Let's modify update_data_if_needed to take start_date/end_date overrides?
+            # Or, simply call update_data_if_needed if no overrides, and if overrides, we assume manual fetch?
+            # But verification mode should work even with overrides?
+            # Actually, verification mode fetches FULL history (2000-01-01), so start_date override is irrelevant for FULL_VERIFY.
+            
+            # So:
+            if current_mode == "FULL_VERIFY":
+                # Call update_data_if_needed with mode, it will handle full fetch.
+                self.update_data_if_needed(symbol, progress_callback=None, update_mode=current_mode)
+            else:
+                # INCREMENTAL
+                self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None)
             
             # Sleep to avoid rate limit
             time.sleep(settings.RATE_LIMIT_SLEEP)

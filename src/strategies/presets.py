@@ -3,6 +3,7 @@ import numpy as np
 
 from src.strategies.base import Strategy
 from src.config.settings import settings
+from src.strategies.sizing import SentimentSizer
 
 class MovingAverageStrategy(Strategy):
     """
@@ -42,13 +43,15 @@ class SentimentRSIStrategy(Strategy):
     Buy when RSI < buy_threshold (oversold) AND Sentiment >= sentiment_threshold.
     Sell when RSI > sell_threshold (overbought).
     """
-    def __init__(self, period: int = settings.DEFAULT_RSI_PERIOD, buy_threshold: int = settings.DEFAULT_RSI_BUY_THRESHOLD, sell_threshold: int = settings.DEFAULT_RSI_SELL_THRESHOLD, sentiment_threshold: float = 0.0):
+    def __init__(self, period: int = settings.DEFAULT_RSI_PERIOD, buy_threshold: int = settings.DEFAULT_RSI_BUY_THRESHOLD, sell_threshold: int = settings.DEFAULT_RSI_SELL_THRESHOLD, sentiment_threshold: float = 0.0, use_dynamic_sizing: bool = True):
         super().__init__()
         self.period = period
         self.buy_threshold = buy_threshold
         self.sell_threshold = sell_threshold
         self.sentiment_threshold = sentiment_threshold
         self.name = "SentimentRSI"
+        self.use_dynamic_sizing = use_dynamic_sizing
+        self.sizer = SentimentSizer(min_sentiment_threshold=sentiment_threshold)
 
     def _calculate_rsi(self, series: pd.Series, period: int) -> pd.Series:
         # [SAFETY] Use shifted data to prevent look-ahead bias (consistent with safe_rolling)
@@ -93,6 +96,15 @@ class SentimentRSIStrategy(Strategy):
         
         self.data['signal'] = self.data['signal'].fillna(0.0)
         
+        # Calculate Target Size
+        if self.use_dynamic_sizing:
+            # Apply sizer to sentiment column
+            # We use a lambda to handle potential NaN or float issues, though fillna(0) above helps.
+            # But sentiment might be NaN if not provided.
+            self.data['target_size'] = self.data['sentiment'].apply(self.sizer.get_target_weight)
+        else:
+            self.data['target_size'] = 1.0
+
         return self.data
 
 class BollingerBreakoutStrategy(Strategy):

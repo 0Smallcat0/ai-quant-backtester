@@ -43,6 +43,17 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
     RETRY_BACKOFF_FACTOR: float = 2.0
     RATE_LIMIT_SLEEP: float = 0.5
+    
+    # ----------------------------------------------------------------
+    # Data Integrity & Update Strategy
+    # ----------------------------------------------------------------
+    # "INCREMENTAL": (Default) Skip existing dates, append new data only. Fast.
+    # "FULL_VERIFY": Download full history, compare with DB. 
+    #                If conflict > tolerance, trigger backup provider voting.
+    DATA_UPDATE_MODE: str = "INCREMENTAL" 
+    
+    # Tolerance for floating point comparison between data sources
+    DATA_DIFF_TOLERANCE: float = 1e-4
     MARKET_CONFIG: dict = {
         'TW': {'suffixes': ['.TW', '.TWO'], 'pattern': r"^\d{4,6}[a-zA-Z]?$", 'default_on_fail': True},
         'CRYPTO': {'suffixes': ['-USD'], 'pattern': r"^[A-Z]+$", 'known': {'BTC', 'ETH', 'DOGE', 'XRP', 'SOL', 'ADA'}, 'default_on_fail': False},

@@ -75,10 +75,15 @@ class SentimentAnalyzer:
                 self.logger.warning(f"JSON Decode Error for {ticker}. Response: {cleaned_response[:100]}...")
                 return 0.0
                 
-            score = float(data.get('score', 0.0))
+            sentiment = float(data.get('sentiment', 0.0))
+            relevance = float(data.get('relevance', 0.0))
             
-            # Clamp score just in case
-            return max(-1.0, min(1.0, score))
+            # Clamp values
+            sentiment = max(-1.0, min(1.0, sentiment))
+            relevance = max(0.0, min(1.0, relevance))
+            
+            final_score = sentiment * relevance
+            return final_score
 
         except Exception as e:
             self.logger.error(f"Error analyzing sentiment for {ticker}: {e}")
@@ -96,7 +101,8 @@ class DecayModel:
 
     def apply_decay(self, dates: pd.DatetimeIndex, raw_scores: Dict[pd.Timestamp, float]) -> pd.Series:
         """
-        Fills missing dates with decayed scores using vectorized operations.
+        Applies linear superposition decay.
+        S_t = Sum(Score_i * exp(-lambda * (t - t_i)))
         
         Args:
             dates: The full range of dates to cover.
@@ -105,42 +111,70 @@ class DecayModel:
         Returns:
             pd.Series with index=dates and values=decayed_scores.
         """
-        # Create a Series with all dates
-        series = pd.Series(index=dates, dtype=float).sort_index()
+        # Create a Series with all dates, initialized to 0
+        # We use a sparse approach: create a series of raw scores aligned to dates
+        raw_series = pd.Series(0.0, index=dates)
         
-        # Fill with raw scores where available
+        # Fill in the raw scores
         for date, score in raw_scores.items():
-            if date in series.index:
-                series[date] = score
+            if date in raw_series.index:
+                # If multiple news on same day, we could sum them or take max. 
+                # Here we assume one score per day or sum if pre-aggregated.
+                # If raw_scores is just a dict, it overwrites. 
+                # Ideally raw_scores should be handled carefully if multiple events.
+                # But for now, let's assume the input dict has unique dates.
+                raw_series[date] = score
+
+        # Optimization:
+        # Instead of double loop, we can use a recursive formulation or convolution.
+        # Recursive: S_t = S_{t-1} * decay + NewScore_t
+        # But this is only true if time steps are uniform (1 day).
+        # Since 'dates' is a DatetimeIndex with freq='D' (usually), we can assume uniform steps.
         
-        # Forward fill with decay
+        # Let's verify frequency. If not uniform, we must use the exact time difference.
+        # For robustness, let's use the exact formula with a lookback window.
+        # However, full O(N^2) is slow.
+        # The recursive formula S_t = S_{t-1} * exp(-lambda * dt) + Raw_t is O(N).
         
-        df = pd.DataFrame(index=dates)
-        df['raw_score'] = pd.Series(raw_scores)
+        decayed_values = []
+        last_val = 0.0
+        last_date = dates[0]
         
-        # Forward fill the raw score (this gives us the base for decay)
-        df['last_score'] = df['raw_score'].ffill()
+        # We iterate through the dates. 
+        # Note: raw_series contains 0.0 where no news.
         
-        # Create a column for "date of last score"
-        df['has_news'] = df['raw_score'].notna()
-        # Use pd.to_datetime to ensure we have datetime objects, not mixed types
-        df['last_news_date'] = pd.Series(np.where(df['has_news'], df.index, pd.NaT), index=df.index)
-        df['last_news_date'] = pd.to_datetime(df['last_news_date']).ffill()
+        # Pre-convert to numpy for speed
+        date_values = dates.values
+        raw_values = raw_series.values
         
-        # Calculate days elapsed
-        # Convert index to series for subtraction
-        current_dates = pd.Series(df.index, index=df.index)
-        df['days_elapsed'] = (current_dates - df['last_news_date']).dt.days
+        # We need time deltas in days.
+        # Let's assume daily frequency for the loop to keep it simple and fast.
+        # If dates are missing (gaps), we calculate exact delta.
         
-        # Calculate decay
-        # S_t = LastScore * exp(-lambda * days)
-        # Handle NaNs (start of period before any news) -> 0.0
-        
-        df['decayed_score'] = df['last_score'] * np.exp(-self.lambda_param * df['days_elapsed'])
-        df['decayed_score'] = df['decayed_score'].fillna(0.0)
+        for i in range(len(dates)):
+            current_date = date_values[i]
+            raw_val = raw_values[i]
+            
+            if i == 0:
+                # First day
+                s_t = raw_val
+            else:
+                # Calculate days elapsed since last step
+                # (current_date - last_date) in days
+                # numpy timedelta64 to float days
+                delta_days = (current_date - last_date) / np.timedelta64(1, 'D')
+                
+                decay_factor = np.exp(-self.lambda_param * delta_days)
+                s_t = last_val * decay_factor + raw_val
+            
+            decayed_values.append(s_t)
+            last_val = s_t
+            last_date = current_date
+            
+        result_series = pd.Series(decayed_values, index=dates)
         
         # Noise filter
-        df.loc[df['decayed_score'].abs() < self.noise_threshold, 'decayed_score'] = 0.0
+        result_series[result_series.abs() < self.noise_threshold] = 0.0
         
-        return df['decayed_score']
+        return result_series
 

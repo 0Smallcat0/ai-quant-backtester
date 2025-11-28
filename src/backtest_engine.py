@@ -119,10 +119,39 @@ class BacktestEngine:
         # We shift signals by 1 to ensure that a signal generated at T (Close) 
         # is only available for execution at T+1 (Open).
         # This prevents any possibility of look-ahead bias in the execution loop.
-        aligned_signals = signals.shift(1).fillna(0)
         
-        # We must reindex signals to match the sliced dataframe
-        combined = df.join(aligned_signals.rename("signal"), how="left").fillna({"signal": 0})
+        # Check if signals is DataFrame or Series
+        target_sizes_arr = None
+        
+        if isinstance(signals, pd.DataFrame):
+            # Expect 'signal' column, optional 'target_size'
+            if 'signal' not in signals.columns:
+                raise ValueError("Signals DataFrame must contain 'signal' column.")
+            
+            shifted_signals = signals.shift(1).fillna(0)
+            
+            # Extract signal series
+            aligned_signal_series = shifted_signals['signal']
+            
+            # Extract target_size if exists
+            if 'target_size' in shifted_signals.columns:
+                # We need to align it with df
+                # Join to ensure index alignment
+                # Note: We'll handle extraction after join
+                pass
+            
+            # Join everything to df
+            # We rename columns to avoid collision if needed, but 'signal' is standard
+            combined = df.join(shifted_signals[['signal']], how="left").fillna({"signal": 0})
+            
+            if 'target_size' in shifted_signals.columns:
+                combined = combined.join(shifted_signals[['target_size']], how="left").fillna({"target_size": 0})
+                target_sizes_arr = combined['target_size'].values
+            
+        else:
+            # It's a Series
+            aligned_signals = signals.shift(1).fillna(0)
+            combined = df.join(aligned_signals.rename("signal"), how="left").fillna({"signal": 0})
         
         # [SAFETY] Pre-flight Data Integrity Check
         if combined.isnull().values.any():
@@ -137,6 +166,7 @@ class BacktestEngine:
         lows = combined['low'].values
         closes = combined['close'].values
         signals_arr = combined['signal'].values
+        # target_sizes_arr is already set above if available
         
         # Pre-calculate length
         n_candles = len(dates)
@@ -167,11 +197,20 @@ class BacktestEngine:
             
             # [SAFETY] Division by zero protection
             if current_open > 0:
+                # Determine sizing factor
+                if target_sizes_arr is not None:
+                    # Use the provided target size from strategy
+                    # This overrides the default position_sizing_target
+                    sizing_factor = float(target_sizes_arr[i])
+                else:
+                    # Use default global setting
+                    sizing_factor = float(self.position_sizing_target)
+
                 if self.position_sizing_method == "fixed_amount":
-                    target_exposure = float(self.position_sizing_target) * signal
+                    target_exposure = sizing_factor * signal
                     target_qty = target_exposure / (current_open + settings.EPSILON)
                 else: # fixed_percent
-                    target_exposure = current_equity_open * float(self.position_sizing_target) * signal
+                    target_exposure = current_equity_open * sizing_factor * signal
                     target_qty = target_exposure / (current_open + settings.EPSILON)
             
             # [FIX] Minimum Exposure Filter
