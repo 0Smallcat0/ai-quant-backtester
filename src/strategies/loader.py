@@ -1,6 +1,7 @@
 import traceback
 import re
 from src.strategies.base import Strategy
+from src.config.settings import settings
 
 class StrategyLoadError(Exception):
     """Custom exception for errors during strategy loading."""
@@ -29,15 +30,8 @@ class StrategyLoader:
         # Static Analysis for Look-ahead Bias
         # Security Check: Look-ahead Bias Detection using Regex
         # We check for negative shifts and forward indexing which imply future data access.
-        forbidden_regexes = [
-            r"\.shift\s*\(\s*-",      # Matches .shift(-1), .shift( -1 ), etc.
-            r"shift\s*\(\s*-",        # Variant without dot
-            r"\.iloc\s*\[\s*i\s*\+\s*\d+",  # Matches .iloc[i+1], .iloc[ i + 1 ], etc.
-            r"\.iloc\s*\[\s*:\s*-?\d+",  # .iloc[:-5] Slicing lookahead
-            r"shift\s*\(\s*-?\d+\s*\)",  # shift(-1)
-            r"\.iloc\s*\[\s*i\s*\+\s*\d+", # .iloc[i+1] Future index
-            r"\.iloc\s*\[\s*\d+\s*:"     # .iloc[10:] Future slice
-        ]
+        # We check for negative shifts and forward indexing which imply future data access.
+        forbidden_regexes = settings.FORBIDDEN_REGEXES
         
         for pattern in forbidden_regexes:
             if re.search(pattern, code_str):

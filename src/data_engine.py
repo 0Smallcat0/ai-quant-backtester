@@ -5,6 +5,7 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime
 import time
+import re
 from typing import Optional, List, Callable, Any
 from typing import Optional, List, Callable, Any
 from src.utils import sanitize_ticker
@@ -73,7 +74,7 @@ class DataManager:
             ticker = sanitize_ticker(ticker)
             
             # Check if it's a Taiwan stock (numeric, 4 digits)
-            if ticker.isdigit() and len(ticker) == 4:
+            if re.match(settings.TW_STOCK_PATTERN, ticker):
                 # Try suffixes from settings
                 for suffix in settings.TICKER_SUFFIXES:
                     test_ticker = f"{ticker}{suffix}"

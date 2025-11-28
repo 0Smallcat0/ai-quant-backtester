@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     RETRY_BACKOFF_FACTOR: float = 2.0
     RATE_LIMIT_SLEEP: float = 0.5
     TICKER_SUFFIXES: list = ['.TW', '.TWO']
+    TW_STOCK_PATTERN: str = r"^\d{4}$" # 4 digits
+
+    # Strategy Configuration
+    USER_STRATEGIES_PATH: Path = DATA_DIR / "user_strategies.json"
+    FORBIDDEN_REGEXES: list = [
+        r"\.shift\s*\(\s*-",      # Matches .shift(-1), .shift( -1 ), etc.
+        r"shift\s*\(\s*-",        # Variant without dot
+        r"\.iloc\s*\[\s*i\s*\+\s*\d+",  # Matches .iloc[i+1], .iloc[ i + 1 ], etc.
+        r"\.iloc\s*\[\s*:\s*-?\d+",  # .iloc[:-5] Slicing lookahead
+        r"shift\s*\(\s*-?\d+\s*\)",  # shift(-1)
+        r"\.iloc\s*\[\s*i\s*\+\s*\d+", # .iloc[i+1] Future index
+        r"\.iloc\s*\[\s*\d+\s*:"     # .iloc[10:] Future slice
+    ]
 
     # Logging Configuration
     LOG_LEVEL: str = "INFO"

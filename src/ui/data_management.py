@@ -4,6 +4,7 @@ import pandas as pd
 import re
 from datetime import datetime
 from src.ui.plotting import plot_price_history
+from src.utils import categorize_ticker
 
 def _categorize_tickers(watchlist):
     categories = {
@@ -14,15 +15,9 @@ def _categorize_tickers(watchlist):
     }
     
     for ticker in watchlist:
-        # TW: 4 digits at start or ends with .TW
-        if (ticker[:4].isdigit() and len(ticker) >= 4) or ticker.endswith('.TW'):
-            categories['TW'].append(ticker)
-        # Crypto: Contains -USD
-        elif '-USD' in ticker:
-            categories['Crypto'].append(ticker)
-        # US: All uppercase, no - or . (basic check)
-        elif ticker.isupper() and '-' not in ticker and '.' not in ticker:
-            categories['US'].append(ticker)
+        cat = categorize_ticker(ticker)
+        if cat in categories:
+            categories[cat].append(ticker)
         else:
             categories['Other'].append(ticker)
             

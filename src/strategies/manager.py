@@ -1,9 +1,10 @@
 import os
 import json
 from typing import Dict, List, Optional
+from src.config.settings import settings
 
 class StrategyManager:
-    def __init__(self, filepath: str = "data/user_strategies.json"):
+    def __init__(self, filepath: str = str(settings.USER_STRATEGIES_PATH)):
         self.filepath = filepath
         self._ensure_file_exists()
 

@@ -63,129 +63,129 @@ def main():
     # [FIX] Ensure root dir AND src dir are in sys.path
     # Handled by add_project_root()
 
-    # try: # [REFACTOR] Removed broad try-except to allow traceback for unknown errors
-    # 1. Load Data
-    logger.info(f"Loading data for {args.ticker}...")
-    data_manager = DataManager(db_path=str(settings.DB_PATH))
-    df = data_manager.get_data(args.ticker)
-        
-    if df.empty:
-        raise ValueError(f"No data found for ticker {args.ticker}")
-        
-    # Filter by date if provided
-    if args.start:
-        df = df[df.index >= args.start]
-    if args.end:
-        df = df[df.index <= args.end]
-        
-    if df.empty:
-        raise ValueError(f"No data found for ticker {args.ticker} in the specified date range")
-
-    # 2. Load Strategy
-    # [FIX] Unmask errors: Remove broad try-except and allow errors to bubble up
-    # 2. Load Strategy
-    loader = StrategyLoader()
-    strategy_class = None
-    
     try:
-        # 1. Try loading via Loader (File or Exact Match)
-        strategy_class = loader.load_strategy(args.strategy_name)
-    except (StrategyLoadError, ImportError, AttributeError):
-        # 2. If Loader fails, proceed to Fallback (Presets)
-        pass
-
-    if strategy_class is None:
-        # 3. Fuzzy Search in Presets
-        # Case 1: Exact Match in Presets
-        if args.strategy_name in PRESET_STRATEGIES:
-            strategy_class = PRESET_STRATEGIES[args.strategy_name]
-        # Case 2: Suffix Auto-complete (e.g. "RSI" -> "RSIStrategy")
-        elif f"{args.strategy_name}Strategy" in PRESET_STRATEGIES:
-            strategy_class = PRESET_STRATEGIES[f"{args.strategy_name}Strategy"]
-        # Case 3: Case-Insensitive Search
-        else:
-            target_upper = args.strategy_name.upper()
-            for name, cls in PRESET_STRATEGIES.items():
-                if name.upper() == target_upper or name.upper() == f"{target_upper}STRATEGY":
-                    strategy_class = cls
-                    break
-    
-    if strategy_class is None:
-        raise ValueError(f"Strategy '{args.strategy_name}' not found in files or presets.")
-
-    # 3. Initialize Engine
-    engine = BacktestEngine()
-    
-    # Instantiate strategy with params
-    # Check if strategy accepts params
-    try:
-        strategy = strategy_class(**strategy_params)
-    except TypeError:
-        # Fallback for strategies that don't accept kwargs or have different init
-        # logger.warning("Strategy does not accept params in __init__, ignoring.")
-        strategy = strategy_class()
-        
-    # Generate Signals
-    # [FIX] BacktestEngine expects signals Series, not strategy object
-    signals_df = strategy.generate_signals(df)
-    if 'signal' not in signals_df.columns:
-            raise ValueError("Strategy output must contain 'signal' column")
-    signals = signals_df['signal']
-    
-    # 4. Run Backtest
-    logger.info("Running backtest...")
-    engine.run(df, signals)
-    
-    # 5. Calculate Performance
-    from src.analytics.performance import calculate_metrics
-    
-    equity_curve = engine.equity_curve
-    
-    # Convert to DataFrame if list
-    if isinstance(equity_curve, list):
-        equity_curve = pd.DataFrame(equity_curve)
-
-    if equity_curve.empty:
-        logger.warning("No trades executed or data empty.")
-        performance = calculate_metrics(pd.DataFrame(), [], 10000.0)
-    else:
-        equity_curve['date'] = pd.to_datetime(equity_curve['date'])
-        equity_curve = equity_curve.set_index('date')
-        
-        performance = calculate_metrics(equity_curve, engine.trades, engine.initial_capital)
-    
-    # 6. Output Results
-    if args.json:
-        # Convert performance dict to JSON
-        # Handle non-serializable types if any (like numpy types)
-        def default_converter(o):
-            if isinstance(o, (pd.Timestamp, datetime)):
-                return o.isoformat()
-            if isinstance(o, (np.int64, np.int32)):
-                return int(o)
-            if isinstance(o, (np.float64, np.float32)):
-                return float(o)
-            return str(o)
+        # 1. Load Data
+        logger.info(f"Loading data for {args.ticker}...")
+        data_manager = DataManager(db_path=str(settings.DB_PATH))
+        df = data_manager.get_data(args.ticker)
             
-        print(json.dumps(performance, default=default_converter, indent=2))
-    else:
-        logger.info("Backtest Results:")
-        print("-" * 30)
-        for k, v in performance.items():
-            if isinstance(v, float):
-                print(f"{k}: {v:.4f}")
+        if df.empty:
+            raise ValueError(f"No data found for ticker {args.ticker}")
+            
+        # Filter by date if provided
+        if args.start:
+            df = df[df.index >= args.start]
+        if args.end:
+            df = df[df.index <= args.end]
+            
+        if df.empty:
+            raise ValueError(f"No data found for ticker {args.ticker} in the specified date range")
+
+        # 2. Load Strategy
+        # [FIX] Unmask errors: Remove broad try-except and allow errors to bubble up
+        # 2. Load Strategy
+        loader = StrategyLoader()
+        strategy_class = None
+        
+        try:
+            # 1. Try loading via Loader (File or Exact Match)
+            strategy_class = loader.load_strategy(args.strategy_name)
+        except (StrategyLoadError, ImportError, AttributeError):
+            # 2. If Loader fails, proceed to Fallback (Presets)
+            pass
+
+        if strategy_class is None:
+            # 3. Fuzzy Search in Presets
+            # Case 1: Exact Match in Presets
+            if args.strategy_name in PRESET_STRATEGIES:
+                strategy_class = PRESET_STRATEGIES[args.strategy_name]
+            # Case 2: Suffix Auto-complete (e.g. "RSI" -> "RSIStrategy")
+            elif f"{args.strategy_name}Strategy" in PRESET_STRATEGIES:
+                strategy_class = PRESET_STRATEGIES[f"{args.strategy_name}Strategy"]
+            # Case 3: Case-Insensitive Search
             else:
-                print(f"{k}: {v}")
-        print("-" * 30)
+                target_upper = args.strategy_name.upper()
+                for name, cls in PRESET_STRATEGIES.items():
+                    if name.upper() == target_upper or name.upper() == f"{target_upper}STRATEGY":
+                        strategy_class = cls
+                        break
+        
+        if strategy_class is None:
+            raise ValueError(f"Strategy '{args.strategy_name}' not found in files or presets.")
+
+        # 3. Initialize Engine
+        engine = BacktestEngine()
+        
+        # Instantiate strategy with params
+        # Check if strategy accepts params
+        try:
+            strategy = strategy_class(**strategy_params)
+        except TypeError:
+            # Fallback for strategies that don't accept kwargs or have different init
+            # logger.warning("Strategy does not accept params in __init__, ignoring.")
+            strategy = strategy_class()
             
-    # except KeyError as e:
-    #     logger.error(f"CRITICAL ERROR: Missing column {e}.")
-    #     logger.debug("This usually means the strategy is trying to access a column that doesn't exist.")
-    #     logger.debug("Ensure your strategy uses lowercase column names (e.g., 'close', 'open').")
-    #     sys.exit(1)
-    # except Exception as e:
-    #     logger.error(f"Error executing backtest: {e}")
-    #     sys.exit(1)
+        # Generate Signals
+        # [FIX] BacktestEngine expects signals Series, not strategy object
+        signals_df = strategy.generate_signals(df)
+        if 'signal' not in signals_df.columns:
+                raise ValueError("Strategy output must contain 'signal' column")
+        signals = signals_df['signal']
+        
+        # 4. Run Backtest
+        logger.info("Running backtest...")
+        engine.run(df, signals)
+        
+        # 5. Calculate Performance
+        from src.analytics.performance import calculate_metrics
+        
+        equity_curve = engine.equity_curve
+        
+        # Convert to DataFrame if list
+        if isinstance(equity_curve, list):
+            equity_curve = pd.DataFrame(equity_curve)
+
+        if equity_curve.empty:
+            logger.warning("No trades executed or data empty.")
+            performance = calculate_metrics(pd.DataFrame(), [], 10000.0)
+        else:
+            equity_curve['date'] = pd.to_datetime(equity_curve['date'])
+            equity_curve = equity_curve.set_index('date')
+            
+            performance = calculate_metrics(equity_curve, engine.trades, engine.initial_capital)
+        
+        # 6. Output Results
+        if args.json:
+            # Convert performance dict to JSON
+            # Handle non-serializable types if any (like numpy types)
+            def default_converter(o):
+                if isinstance(o, (pd.Timestamp, datetime)):
+                    return o.isoformat()
+                if isinstance(o, (np.int64, np.int32)):
+                    return int(o)
+                if isinstance(o, (np.float64, np.float32)):
+                    return float(o)
+                return str(o)
+                
+            print(json.dumps(performance, default=default_converter, indent=2))
+        else:
+            logger.info("Backtest Results:")
+            print("-" * 30)
+            for k, v in performance.items():
+                if isinstance(v, float):
+                    print(f"{k}: {v:.4f}")
+                else:
+                    print(f"{k}: {v}")
+            print("-" * 30)
+            
+    except KeyError as e:
+        logger.error(f"CRITICAL ERROR: Missing column {e}.")
+        logger.debug("This usually means the strategy is trying to access a column that doesn't exist.")
+        logger.debug("Ensure your strategy uses lowercase column names (e.g., 'close', 'open').")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error executing backtest: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
