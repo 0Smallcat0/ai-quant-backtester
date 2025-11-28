@@ -32,9 +32,11 @@ def main():
     
     # Configure Logging
     try:
-        from src.utils import setup_logging
+        from src.config.logging_config import setup_logging
     except ImportError:
-        from utils import setup_logging
+        # Fallback if running as script
+        sys.path.append(str(settings.BASE_DIR))
+        from src.config.logging_config import setup_logging
         
     logger = setup_logging(__name__)
     

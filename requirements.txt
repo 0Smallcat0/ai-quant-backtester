@@ -13,3 +13,8 @@ beautifulsoup4
 pyarrow>=6.0.0
 cachetools
 requests
+pytest-mock>=3.10.0
+pydantic-settings>=2.0.0
+pandas-datareader
+twstock
+ccxt

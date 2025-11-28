@@ -12,12 +12,10 @@ class TestDataChunking:
         Input: 2000-01-01 to 2020-12-31, MAX_CHUNK_YEARS=5
         Expected: 2000-2004, 2005-2009, 2010-2014, 2015-2019, 2020-2020 (or similar depending on implementation)
         """
-        # We need to test the internal logic of fetch_data or extract the chunking logic to a helper method.
-        # Since we are refactoring fetch_data, let's assume we will use a loop that we can verify via mocking yf.download.
-        
-        # Mock yf.download to avoid actual network calls
-        with patch('src.data_engine.yf.download') as mock_download:
-            mock_download.return_value = pd.DataFrame() # Return empty DF to avoid processing
+        # Mock YFinanceProvider to verify fetch_history calls
+        with patch('src.data_engine.YFinanceProvider') as MockProvider:
+            mock_instance = MockProvider.return_value
+            mock_instance.fetch_history.return_value = pd.DataFrame() # Return empty DF
             
             dm = DataManager(db_path=":memory:")
             
@@ -25,7 +23,7 @@ class TestDataChunking:
             with patch.object(settings, 'MAX_CHUNK_YEARS', 5):
                 dm.fetch_data("AAPL", start_date="2000-01-01", end_date="2020-12-31")
                 
-                # Check how many times download was called
+                # Check how many times fetch_history was called
                 # Total years = 21 (2000 to 2020 inclusive)
                 # Chunks: 
                 # 1. 2000-2004 (5 years)
@@ -35,19 +33,15 @@ class TestDataChunking:
                 # 5. 2020-2020 (1 year)
                 # Total calls should be 5.
                 
-                # If the old logic (1 year per chunk) was used, it would be 21 calls.
-                
-                assert mock_download.call_count == 5, f"Expected 5 chunks, got {mock_download.call_count}"
+                assert mock_instance.fetch_history.call_count == 5, f"Expected 5 chunks, got {mock_instance.fetch_history.call_count}"
                 
                 # Verify arguments of the first call
-                args, kwargs = mock_download.call_args_list[0]
-                # yf.download(ticker, start=..., end=...)
-                # Note: yf.download 'end' is exclusive usually, but let's check what we pass.
-                # In our code we pass string dates.
+                args, kwargs = mock_instance.fetch_history.call_args_list[0]
+                # fetch_history(ticker, start_date, end_date)
+                # args[0] is ticker, args[1] is start, args[2] is end
                 
-                # We expect the first chunk to start at 2000-01-01
-                assert kwargs['start'] == "2000-01-01"
+                assert args[1] == "2000-01-01"
                 
                 # Verify arguments of the last call
-                args, kwargs = mock_download.call_args_list[-1]
-                assert kwargs['start'] == "2020-01-01"
+                args, kwargs = mock_instance.fetch_history.call_args_list[-1]
+                assert args[1] == "2020-01-01"

@@ -43,8 +43,11 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
     RETRY_BACKOFF_FACTOR: float = 2.0
     RATE_LIMIT_SLEEP: float = 0.5
-    TICKER_SUFFIXES: list = ['.TW', '.TWO']
-    TW_STOCK_PATTERN: str = r"^\d{4,6}[a-zA-Z]?$" # 4-6 digits + optional letter
+    MARKET_CONFIG: dict = {
+        'TW': {'suffixes': ['.TW', '.TWO'], 'pattern': r"^\d{4,6}[a-zA-Z]?$", 'default_on_fail': True},
+        'CRYPTO': {'suffixes': ['-USD'], 'pattern': r"^[A-Z]+$", 'known': {'BTC', 'ETH', 'DOGE', 'XRP', 'SOL', 'ADA'}, 'default_on_fail': False},
+        'US': {'suffixes': [], 'pattern': r"^[A-Z]+$", 'default_on_fail': False}
+    }
 
     # News Engine Settings
     NEWS_BASE_URLS: dict = {

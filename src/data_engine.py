@@ -11,11 +11,23 @@ from typing import Optional, List, Callable, Any
 from src.utils import sanitize_ticker
 from src.config.settings import settings
 from src.data.news_engine import NewsEngine
+from src.config.logging_config import setup_logging
+
+from src.data_loader.providers.yfinance_provider import YFinanceProvider
+from src.data_loader.providers.stooq_provider import StooqProvider
+from src.data_loader.providers.twstock_provider import TwStockProvider
+from src.data_loader.providers.ccxt_provider import CcxtProvider
+
+logger = setup_logging(__name__)
 
 class DataManager:
     def __init__(self, db_path: str, news_engine: Optional[Any] = None):
         self.db_path = db_path
         self.news_engine = news_engine
+        self.yf_provider = YFinanceProvider()
+        self.stooq_provider = StooqProvider()
+        self.twstock_provider = TwStockProvider()
+        self.ccxt_provider = CcxtProvider()
 
     def get_connection(self) -> sqlite3.Connection:
         # [SAFETY] Increased timeout to prevent 'database is locked' errors
@@ -23,7 +35,7 @@ class DataManager:
 
     def init_db(self) -> None:
         """Initialize the SQLite database with required tables."""
-        print(f"Initializing DB at {self.db_path}")
+        logger.info(f"Initializing DB at {self.db_path}")
         conn = self.get_connection()
         
         # [OPTIMIZATION] Enable WAL mode and synchronous=NORMAL for performance
@@ -66,39 +78,51 @@ class DataManager:
 
     def normalize_ticker(self, ticker: str) -> str:
         """
-        Normalize ticker symbol for different markets.
-        - US: AAPL -> AAPL
-        - TW: 2330 -> 2330.TW (or .TWO)
-        - Crypto: BTC -> BTC-USD
+        Normalize ticker symbol for different markets using MARKET_CONFIG.
         """
         try:
             # [FIX] Sanitize ticker
             ticker = sanitize_ticker(ticker)
             
-            # Check if it's a Taiwan stock (numeric, 4-6 digits + optional letter)
-            if re.match(settings.TW_STOCK_PATTERN, ticker):
-                # Try suffixes from settings
-                for suffix in settings.TICKER_SUFFIXES:
-                    test_ticker = f"{ticker}{suffix}"
-                    try:
-                        # Fast check with history
-                        hist = yf.Ticker(test_ticker).history(period='1d')
-                        if not hist.empty:
-                            return test_ticker
-                    except:
-                        pass
+            for market, config in settings.MARKET_CONFIG.items():
+                # Check known symbols first
+                known = config.get('known', set())
+                if ticker in known:
+                    suffixes = config.get('suffixes', [])
+                    if suffixes:
+                        return f"{ticker}{suffixes[0]}"
+                    return ticker
+
+                pattern = config.get('pattern')
+                suffixes = config.get('suffixes', [])
                 
-                # Default to first suffix if check fails but looks like TW stock
-                return f"{ticker}{settings.TICKER_SUFFIXES[0]}"
-
-            # Check if it's likely a Crypto (e.g., BTC, ETH) and not a standard US ticker
-            if ticker in settings.KNOWN_CRYPTOS:
-                return f"{ticker}-USD"
-
+                if re.match(pattern, ticker):
+                    # If it matches the pattern, try suffixes
+                    if not suffixes:
+                        # If US (no suffix), we can't easily distinguish from Crypto by pattern alone
+                        # unless we check existence. 
+                        # But since US is before Crypto in dict (usually), it matches US first.
+                        # If we want to support implicit Crypto, we rely on 'known' list.
+                        return ticker
+                        
+                    for suffix in suffixes:
+                        test_ticker = f"{ticker}{suffix}"
+                        try:
+                            # Fast check with history
+                            hist = yf.Ticker(test_ticker).history(period='1d')
+                            if not hist.empty:
+                                return test_ticker
+                        except:
+                            pass
+                    
+                    # Default to first suffix if check fails but matches pattern
+                    if suffixes and config.get('default_on_fail', False):
+                        return f"{ticker}{suffixes[0]}"
+            
             return ticker
         except Exception as e:
-            print(f"Warning: normalize_ticker failed for {ticker}: {e}. Defaulting to {ticker}{settings.TICKER_SUFFIXES[0]}")
-            return f"{ticker}{settings.TICKER_SUFFIXES[0]}"
+            logger.warning(f"Warning: normalize_ticker failed for {ticker}: {e}. Returning original.")
+            return ticker
 
     def _calc_smart_start(self, ticker: str) -> str:
         """
@@ -135,9 +159,12 @@ class DataManager:
 
     def fetch_data(self, ticker: str, start_date: Optional[str] = None, end_date: Optional[str] = None, progress_callback: Optional[Callable[[float, str], None]] = None) -> None:
         """
-        Fetch data from yfinance and store in DB.
+        Fetch data using providers and store in DB.
         Supports chunked downloading for progress tracking.
         """
+        # [FIX] Normalize ticker to ensure correct suffix (e.g., 00679B -> 00679B.TWO)
+        ticker = self.normalize_ticker(ticker)
+
         # Default to a reasonable start date if not provided
         if not start_date:
             start_date = settings.DEFAULT_START_DATE
@@ -177,36 +204,53 @@ class DataManager:
             if progress_callback:
                 progress_callback(i / total_chunks, f"Downloading {ticker} data for {chunk_start_year}-{chunk_end_year}...")
 
-            # Retry logic for yfinance download
-            max_retries = settings.MAX_RETRIES
-            for attempt in range(max_retries):
-                try:
-                    # [FIX] Disable auto_adjust for Taiwan stocks to prevent zero volume bug
-                    # yfinance has a known issue with auto_adjust=True for .TW/.TWO ETFs (like 0056)
-                    use_auto_adjust = True
-                    if ticker.endswith('.TW') or ticker.endswith('.TWO'):
-                        use_auto_adjust = False
-                    
-                    df_chunk = yf.download(ticker, start=chunk_start, end=chunk_end, progress=False, multi_level_index=False, auto_adjust=use_auto_adjust)
-                    
-                    if not df_chunk.empty:
-                        all_dfs.append(df_chunk)
-                    break # Success, exit retry loop
-                    
-                except Exception as e:
-                    if attempt < max_retries - 1:
-                        sleep_time = settings.RETRY_BACKOFF_FACTOR ** attempt
-                        print(f"Error fetching {chunk_start_year}-{chunk_end_year} for {ticker}: {e}. Retrying in {sleep_time}s...")
-                        time.sleep(sleep_time)
-                    else:
-                        print(f"Failed to fetch {chunk_start_year}-{chunk_end_year} for {ticker} after {max_retries} attempts: {e}")
+            # Provider Failover Logic
+            df_chunk = pd.DataFrame()
+            try:
+                # Step 1: Try YFinance
+                df_chunk = self.yf_provider.fetch_history(ticker, chunk_start, chunk_end)
+            except Exception as e:
+                logger.warning(f"YFinance failed for {ticker} ({chunk_start} to {chunk_end}): {e}")
+                
+                # Step 2: Check if US stock (simple heuristic: no dot suffix, or explicit check)
+                # In this system, US stocks usually don't have suffixes like .TW
+                is_us_stock = '.' not in ticker
+                is_tw_stock = ticker.endswith('.TW') or ticker.endswith('.TWO')
+                is_crypto = ticker.endswith('-USD') and not is_tw_stock
+                
+                if is_tw_stock:
+                    try:
+                        # Step 3a: Fallback to TwStock
+                        logger.warning(f"Falling back to TwStock for {ticker}...")
+                        df_chunk = self.twstock_provider.fetch_history(ticker, chunk_start, chunk_end)
+                    except Exception as tw_e:
+                        logger.error(f"TwStock also failed for {ticker}: {tw_e}")
+                elif is_crypto:
+                    try:
+                        # Step 3b: Fallback to CCXT
+                        logger.warning(f"Falling back to CCXT for {ticker}...")
+                        df_chunk = self.ccxt_provider.fetch_history(ticker, chunk_start, chunk_end)
+                    except Exception as ccxt_e:
+                        logger.error(f"CCXT also failed for {ticker}: {ccxt_e}")
+                elif is_us_stock:
+                    try:
+                        # Step 3c: Fallback to Stooq
+                        logger.warning(f"Falling back to Stooq for {ticker}...")
+                        df_chunk = self.stooq_provider.fetch_history(ticker, chunk_start, chunk_end)
+                    except Exception as stooq_e:
+                        logger.error(f"Stooq also failed for {ticker}: {stooq_e}")
+                else:
+                    logger.error(f"No fallback available for stock {ticker}")
+
+            if not df_chunk.empty:
+                all_dfs.append(df_chunk)
 
         if progress_callback:
             progress_callback(1.0, f"Finalizing {ticker} data...")
 
         
         if not all_dfs:
-            print(f"No data fetched for {ticker}")
+            logger.warning(f"No data fetched for {ticker}")
             return
 
         # [ROBUSTNESS] Deduplication and Sorting
@@ -241,7 +285,7 @@ class DataManager:
                     row['low'], row['close'], row['volume']
                 ))
             except KeyError as e:
-                print(f"Skipping row due to missing column: {e}")
+                logger.warning(f"Skipping row due to missing column: {e}")
                 continue
             
         conn = self.get_connection()
@@ -371,7 +415,7 @@ class DataManager:
                         df['sentiment'] = 0.0
                         
                 except Exception as e:
-                    print(f"Warning: Failed to integrate sentiment for {ticker}: {e}")
+                    logger.warning(f"Warning: Failed to integrate sentiment for {ticker}: {e}")
                     df['sentiment'] = 0.0
         
         # [ROBUSTNESS] Empty Guard
@@ -386,10 +430,10 @@ class DataManager:
         start_date = self._calc_smart_start(ticker)
         
         if start_date:
-            print(f"Updating data for {ticker} from {start_date}...")
+            logger.info(f"Updating data for {ticker} from {start_date}...")
             self.fetch_data(ticker, start_date=start_date, progress_callback=progress_callback)
         else:
-            print(f"Data for {ticker} is up to date.")
+            logger.info(f"Data for {ticker} is up to date.")
             if progress_callback:
                 progress_callback(1.0, "Data is up to date.")
 
@@ -399,6 +443,9 @@ class DataManager:
             raise ValueError("Ticker symbol cannot be empty.")
         # [FIX] Sanitize symbol
         symbol = sanitize_ticker(symbol)
+        
+        # [FIX] Normalize symbol (e.g., 00679B -> 00679B.TWO)
+        symbol = self.normalize_ticker(symbol)
         
         conn = self.get_connection()
         cursor = conn.cursor()
@@ -443,7 +490,7 @@ class DataManager:
         """
         watchlist = self.get_watchlist()
         if not watchlist:
-            print("Watchlist is empty.")
+            logger.info("Watchlist is empty.")
             return
         
         total = len(watchlist)
@@ -452,7 +499,7 @@ class DataManager:
             if progress_callback:
                 progress_callback(i / total, f"Checking {symbol} ({i+1}/{total})...")
             
-            print(f"Processing {symbol}...")
+            logger.info(f"Processing {symbol}...")
             
             current_start_date = start_date
             current_end_date = end_date
@@ -462,11 +509,11 @@ class DataManager:
                 # [REFACTOR] Use _calc_smart_start
                 smart_start = self._calc_smart_start(symbol)
                 if not smart_start:
-                    print(f"{symbol} is up-to-date.")
+                    logger.info(f"{symbol} is up-to-date.")
                     continue
                 current_start_date = smart_start
 
-            print(f"Updating {symbol} from {current_start_date}...")
+            logger.info(f"Updating {symbol} from {current_start_date}...")
             self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None) # Internal progress handled?
             
             # Sleep to avoid rate limit

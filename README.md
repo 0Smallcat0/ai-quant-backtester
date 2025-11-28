@@ -29,6 +29,20 @@ A sophisticated pipeline for real-time market intelligence:
     *   **Bankruptcy Protection**: Automatically halts trading if equity hits zero.
     *   **Long-Only Compliance**: Enforced at the engine level for spot markets.
 
+### 🛡️ Data Sources & Resilience
+The engine implements a robust **Provider Pattern** with cascading failover to ensure data availability across global markets.
+
+| Market | Primary Source | Failover/Backup |
+| :--- | :--- | :--- |
+| **US Stocks** | YFinance | Stooq (via pandas-datareader) |
+| **Taiwan Stocks** | YFinance | TwStock (Official TWSE/TPEX) |
+| **Crypto** | YFinance | CCXT (Binance/Kraken) |
+
+**Key Features:**
+*   **Automatic Failover**: If the primary source fails, the engine automatically detects the asset class and switches to the appropriate backup provider.
+*   **Standardized Output**: All providers are strictly audited to return data with consistent columns (`Open`, `High`, `Low`, `Close`, `Volume`) and types.
+*   **Rate Limiting**: Built-in protection for sensitive APIs (e.g., TwStock) to prevent IP bans.
+
 ## ⚠️ Known Limitations
 
 > **Historical Data Limitation**

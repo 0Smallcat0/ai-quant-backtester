@@ -9,23 +9,22 @@ def data_manager():
 
 def test_config_usage_known_cryptos(data_manager):
     """
-    Case A: Verify Config Usage (KNOWN_CRYPTOS)
-    Check if normalize_ticker correctly identifies tickers in settings.KNOWN_CRYPTOS.
-    We monkeypatch settings.KNOWN_CRYPTOS to ensure it's reading from settings.
+    Case A: Verify Config Usage (MARKET_CONFIG)
+    Check if normalize_ticker correctly identifies tickers in settings.MARKET_CONFIG['CRYPTO']['known'].
+    We monkeypatch settings.MARKET_CONFIG to ensure it's reading from settings.
     """
     # Test with a standard crypto from settings
+    print(f"DEBUG: MARKET_CONFIG = {settings.MARKET_CONFIG}")
     assert data_manager.normalize_ticker("BTC") == "BTC-USD"
 
     # Test with a NEW crypto added via monkeypatch to verify dynamic config usage
-    with patch.object(settings, 'KNOWN_CRYPTOS', {'TESTCOIN'}):
-        # Re-instantiate or just call method if it doesn't cache settings (it shouldn't)
-        # Note: If DataManager caches settings on init, this might fail. 
-        # But based on code, it accesses local var or global settings.
-        # The current code has hardcoded set. We expect the refactored code to use settings.KNOWN_CRYPTOS.
-        
-        # If the code is NOT refactored yet, this test MIGHT fail or pass depending on implementation.
-        # But we are writing the test FIRST (Red).
-        # If the code is hardcoded, "TESTCOIN" won't be recognized.
+    # We need to construct a mock MARKET_CONFIG
+    mock_config = settings.MARKET_CONFIG.copy()
+    mock_config['CRYPTO'] = mock_config['CRYPTO'].copy()
+    mock_config['CRYPTO']['known'] = mock_config['CRYPTO']['known'].copy()
+    mock_config['CRYPTO']['known'].add('TESTCOIN')
+    
+    with patch.object(settings, 'MARKET_CONFIG', mock_config):
         assert data_manager.normalize_ticker("TESTCOIN") == "TESTCOIN-USD"
 
 def test_sanitization_usage(data_manager):

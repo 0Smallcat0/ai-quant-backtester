@@ -42,3 +42,9 @@ data/user_strategies.json
 
 # Testing Cache
 .pytest_cache/
+
+# Temporary & Logs
+*.log
+temp_*.py
+sandbox.py
+*.csv
