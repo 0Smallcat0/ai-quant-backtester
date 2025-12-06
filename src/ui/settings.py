@@ -176,7 +176,15 @@ def render_global_settings_page(dm):
                 value=float(current_settings.get('sizing_target', 1000.0)),
                 step=100.0
             )
-            
+
+    # --- HRP Settings ---
+    st.subheader("🧩 HRP Settings")
+    c_hrp1, c_hrp2 = st.columns(2)
+    with c_hrp1:
+        hrp_denoise = st.checkbox("Enable HRP Denoising", value=current_settings.get('hrp_denoise', False), help="Apply de-noising to the covariance matrix.")
+    with c_hrp2:
+        hrp_gerber = st.checkbox("Enable Gerber Statistics", value=current_settings.get('hrp_gerber', False), help="Use Gerber statistics for robust covariance estimation.")
+
     # --- Save Action ---
     if st.button("Save Settings", type="primary"):
         # Update Session State
@@ -186,7 +194,9 @@ def render_global_settings_page(dm):
         
         st.session_state['trading_settings'] = {
             'sizing_method': sizing_method,
-            'sizing_target': sizing_target
+            'sizing_target': sizing_target,
+            'hrp_denoise': hrp_denoise,
+            'hrp_gerber': hrp_gerber
         }
         
         # Update Environment Variables (Hot Reload)
