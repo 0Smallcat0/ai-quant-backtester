@@ -4,7 +4,7 @@ import pandas as pd
 import re
 from datetime import datetime
 from src.ui.plotting import plot_price_history
-from src.utils import categorize_ticker
+from src.utils import detect_market
 from src.data.news_fetcher import NewsFetcher
 
 def _categorize_tickers(watchlist):
@@ -16,7 +16,12 @@ def _categorize_tickers(watchlist):
     }
     
     for ticker in watchlist:
-        cat = categorize_ticker(ticker)
+        cat_raw = detect_market(ticker)
+        # Map to display categories
+        if cat_raw == 'CRYPTO':
+            cat = 'Crypto'
+        else:
+            cat = cat_raw
         if cat in categories:
             categories[cat].append(ticker)
         else:
@@ -62,8 +67,11 @@ def render_data_management_page(dm):
         
         with col1:
             # Add Ticker
-            new_ticker = st.text_input("Add Ticker Symbol", placeholder="e.g., AAPL, 2330, BTC", key="dm_add_ticker")
-            if st.button("Add to Watchlist", type="primary"):
+            with st.form("add_ticker_form"):
+                new_ticker = st.text_input("Add Ticker Symbol", placeholder="e.g., AAPL, 2330, BTC", key="dm_add_ticker")
+                submitted = st.form_submit_button("Add to Watchlist", type="primary")
+            
+            if submitted:
                 if not new_ticker.strip():
                     st.error("⚠️ Ticker symbol cannot be empty!")
                 else:
@@ -153,25 +161,70 @@ def render_data_management_page(dm):
         selected_mode = mode_map[update_strategy]
         
         if st.button("🚀 Update All Data", type="primary", width="stretch"):
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            def update_progress(progress, message):
-                progress_bar.progress(progress)
-                status_text.text(message)
+            # Ensure News Engine exists
+            if not getattr(dm, 'news_engine', None):
+                # [OPTIMIZATION] Use cached resource for heavy model loading
+                @st.cache_resource
+                def get_news_engine():
+                    from src.data.news_engine import NewsEngine
+                    return NewsEngine()
                 
-            with st.spinner(f"Batch updating watchlist ({selected_mode})..."):
-                dm.update_all_tracked_symbols(
-                    progress_callback=update_progress,
-                    start_date=start_date.strftime('%Y-%m-%d'),
-                    end_date=end_date.strftime('%Y-%m-%d'),
-                    update_mode=selected_mode
-                )
+                dm.news_engine = get_news_engine()
+
+            # Phase 1: Price Update
+            with st.status("🚀 Phase 1: 更新價格數據 (OHLCV)...", expanded=True) as status:
+                progress_bar_p1 = st.progress(0)
+                
+                def update_progress(progress, message):
+                    progress_bar_p1.progress(progress)
+                    status.write(message)
+                
+                try:
+                    dm.update_all_tracked_symbols(
+                        progress_callback=update_progress,
+                        start_date=start_date.strftime('%Y-%m-%d'),
+                        end_date=end_date.strftime('%Y-%m-%d'),
+                        update_mode=selected_mode
+                    )
+                except Exception as e:
+                    error_msg = str(e)
+                    if "DEAD_TICKER" in error_msg:
+                         # Extract ticker if possible or just show message
+                         match = re.search(r"DEAD_TICKER: (\S+)", error_msg)
+                         ticker_name = match.group(1) if match else "Unknown"
+                         st.error(f"⚠️ {ticker_name} 似乎已下市或代碼錯誤 (Yahoo 404)。建議從清單中移除。")
+                    else:
+                         st.error(f"Update failed: {e}")
+                    # Stop execution of subsequent phases if Critical Error
+                    st.stop()
+                status.update(label="✅ 價格數據更新完成！", state="complete", expanded=False)
+
+            # Phase 2: Sentiment Update (Smart Incremental)
+            enable_sentiment = st.session_state.get('enable_sentiment', True)
             
-            st.success("All data updated successfully!")
-            time.sleep(1)
-            progress_bar.empty()
-            status_text.empty()
+            if enable_sentiment:
+                with st.status("🧠 Phase 2: 分析市場情緒 (FinBERT + ABSA)...", expanded=True) as status_s:
+                    st.caption("⚠️ 注意：新聞情緒分析僅支援『最近 30 天』的即時數據，無法回溯歷史。")
+                    progress_bar_s = st.progress(0)
+                    watchlist_s = dm.get_watchlist()
+                    total_s = len(watchlist_s)
+                    
+                    if total_s > 0:
+                        for i, ticker in enumerate(watchlist_s):
+                            status_s.write(f"Checking {ticker} ({i+1}/{total_s})...")
+                            # Use update_cache_smart logic
+                            try:
+                                dm.news_engine.update_cache_smart(ticker)
+                            except Exception as e:
+                                st.error(f"Error updating sentiment for {ticker}: {e}")
+                            progress_bar_s.progress((i + 1) / total_s)
+                    
+                    status_s.write("All symbols updated.")
+                    status_s.update(label="✅ 情緒分析完成！", state="complete", expanded=False)
+            else:
+                st.warning("⏩ Phase 2: 分析市場情緒 (已略過 - 請至 Global Settings 開啟)")
+            
+            st.success("所有數據更新完畢 (價格 + 情緒)！")
             
     with col_op2:
         # Status Summary (Optional - could be expanded)
@@ -184,7 +237,12 @@ def render_data_management_page(dm):
     st.markdown("---")
     st.subheader("📈 Data Preview")
     
-    watchlist = dm.get_watchlist()
+    # [OPTIMIZATION] Cached Data Fetcher for Preview
+    @st.cache_data(ttl=600, show_spinner="Loading preview data...")
+    def get_cached_data_preview(_dm, ticker: str):
+         # Note: _dm starting with underscore prevents Streamlit from hashing the DataManager object
+         return _dm.get_data(ticker)
+
     if watchlist:
         # Categorize
         cats = _categorize_tickers(watchlist)
@@ -206,8 +264,8 @@ def render_data_management_page(dm):
 
         selected_ticker = st.selectbox("Select Ticker to View", filtered_watchlist, index=0, key="dm_preview_select")
         
-        # Fetch Data
-        df = dm.get_data(selected_ticker)
+        # Fetch Data (Cached)
+        df = get_cached_data_preview(dm, selected_ticker)
         
         if not df.empty:
             # Display Metrics
@@ -223,7 +281,7 @@ def render_data_management_page(dm):
             m4.metric("Records", len(df))
             
             # Simple Chart
-            tab1, tab2 = st.tabs(["Chart", "Raw Data"])
+            tab1, tab2, tab3 = st.tabs(["Chart", "Raw Data", "Sentiment"])
             
             with tab1:
 
@@ -240,6 +298,51 @@ def render_data_management_page(dm):
                 
             with tab2:
                 st.dataframe(df.sort_index(ascending=False))
+                
+            with tab3:
+                # Load Sentiment
+                if not getattr(dm, 'news_engine', None):
+                    from src.data.news_engine import NewsEngine
+                    dm.news_engine = NewsEngine()
+                
+                import os
+                # We need cache path. Since _get_cache_path is protected, we access it or duplicate logic.
+                # Accessing protected member is acceptable here for UI.
+                cache_path = dm.news_engine._get_cache_path(selected_ticker)
+                
+                if os.path.exists(cache_path):
+                    try:
+                        sent_df = pd.read_parquet(cache_path)
+                        if not sent_df.empty:
+                            st.caption("Sentiment Score (Decayed): Polarity over time")
+                            # Normalize index to datetime just in case
+                            sent_df.index = pd.to_datetime(sent_df.index)
+                            
+                            # [FIX] Smart Crop: Filter out near-zero noise and zoom to valid data
+                            # Threshold = 0.001 to ignore float artifacts
+                            significant_sentiment = sent_df[sent_df['sentiment'].abs() > 0.001]
+                            
+                            if not significant_sentiment.empty:
+                                first_valid_idx = significant_sentiment.index.min()
+                                # Buffer: 5 days before first valid data point
+                                start_plot = first_valid_idx - pd.Timedelta(days=5)
+                                sent_df = sent_df[start_plot:]
+                            else:
+                                # If all data is effectively zero, show a warning or just the tail
+                                # st.warning("Only near-zero sentiment data found.")
+                                pass # Proceed to plot what we have (likely flat 0s)
+                                
+                            st.line_chart(sent_df['sentiment'])
+                            
+                            st.divider()
+                            st.write("Recent Raw Data (Top 5):")
+                            st.dataframe(sent_df.sort_index(ascending=False).head(5))
+                        else:
+                            st.info("Sentiment data is empty.")
+                    except Exception as e:
+                        st.error(f"Error reading sentiment cache: {e}")
+                else:
+                    st.info(f"尚無情緒數據 ({selected_ticker})，請執行 Update All Data。")
                 
             # [NEW] Live News Check
             st.divider()

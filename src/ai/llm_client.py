@@ -193,9 +193,17 @@ class LLMClient:
                 full_content += str(content)
                 
                 if response.choices[0].finish_reason == "length":
-                    # Token limit reached, request continuation
-                    current_messages.append({"role": "assistant", "content": content})
-                    current_messages.append({"role": "user", "content": "Continue generating the code exactly where you left off. Do not repeat."})
+                    # [PERFORMANCE] Context Pruning to avoid O(N^2) token costs
+                    # Instead of appending full history, we only keep the tail for continuity
+                    last_chunk = content
+                    pruned_context = last_chunk[-500:] if len(last_chunk) > 500 else last_chunk
+                    
+                    # Reset messages to keep context window small
+                    # We keep System Prompt but replace the conversation with a continuation request
+                    current_messages = [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": f"You stopped at:\n...{pruned_context}\n\nContinue the code exactly from where it stopped."}
+                    ]
                 else:
                     break
             

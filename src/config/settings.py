@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     DEFAULT_TEMPERATURE: float = 0.7
     DEFAULT_TOP_P: float = 0.9
 
+    # Sentiment Configuration
+    SENTIMENT_MODEL_TYPE: str = "local_hybrid"  # or "simple_remote"
+    FINBERT_PATH: str = "yiyanghkust/finbert-tone"
+    ABSA_MODEL_PATH: str = "snrspeaks/Gemma-2B-it-Finance-Aspect-Based-Sentiment-Analyzer"
+    SENTIMENT_FILTER_THRESHOLD: float = 0.6
+
     # Trading Constants
     INITIAL_CAPITAL: float = 10000.0
     COMMISSION_RATE: float = 0.001  # 0.1%
@@ -73,7 +79,7 @@ class Settings(BaseSettings):
     }
     NEWS_TOP_N_LIMIT: int = 10
     LLM_MAX_INPUT_CHARS: int = 6000 # Approx 1500-2000 tokens
-    SENTIMENT_DECAY_HALFLIFE: float = 3.0
+    SENTIMENT_DECAY_HALFLIFE: float = 5.0
     SENTIMENT_NOISE_THRESHOLD: float = 0.01
     
     # News Engine - Noise Filtering

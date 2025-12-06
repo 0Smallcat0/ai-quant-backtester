@@ -32,7 +32,7 @@ def render_strategy_creation_page(dm):
         available_tickers = watchlist
         
         # Filter Ticker by Category
-        from src.utils import categorize_ticker
+        from src.utils import detect_market
         filter_cat = st.radio(
             "Filter Ticker by Category:", 
             ["All", "TW", "US", "Crypto", "Other"], 
@@ -40,7 +40,10 @@ def render_strategy_creation_page(dm):
         )
         
         if filter_cat != "All":
-            filtered_tickers = [t for t in available_tickers if categorize_ticker(t) == filter_cat]
+            # Filter logic: detect_market returns 'TW', 'US', 'CRYPTO', 'Other'
+            # UI filter_cat has 'Crypto' (Title case)
+            target_cat = filter_cat.upper() # 'CRYPTO', 'TW', 'US'
+            filtered_tickers = [t for t in available_tickers if detect_market(t) == target_cat]
         else:
             filtered_tickers = available_tickers
             
@@ -217,6 +220,7 @@ def render_strategy_creation_page(dm):
                     st.error("Start Date must be strictly before End Date.")
                     return
 
+                # [STRICT BINDING] Force Sentiment Load for V2.0
                 df = dm.get_data(ticker, include_sentiment=True)
                 if df.empty:
                     st.error(f"No data found for {ticker}.")

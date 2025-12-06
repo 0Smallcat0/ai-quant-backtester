@@ -48,3 +48,4 @@ data/user_strategies.json
 temp_*.py
 sandbox.py
 *.csv
+data/sentiment_cache/

@@ -1,4 +1,7 @@
 import sqlite3
+import concurrent.futures
+import threading
+
 
 import pandas as pd
 import numpy as np
@@ -8,10 +11,13 @@ import time
 import re
 from typing import Optional, List, Callable, Any
 from typing import Optional, List, Callable, Any
-from src.utils import sanitize_ticker
+from src.utils import sanitize_ticker, detect_market
+import src.utils
 from src.config.settings import settings
 from src.data.news_engine import NewsEngine
 from src.config.logging_config import setup_logging
+import shutil
+import os
 
 from src.data_loader.providers.yfinance_provider import YFinanceProvider
 from src.data_loader.providers.stooq_provider import StooqProvider
@@ -28,10 +34,41 @@ class DataManager:
         self.stooq_provider = StooqProvider()
         self.twstock_provider = TwStockProvider()
         self.ccxt_provider = CcxtProvider()
+        self._local = threading.local()
+
+    # [PERFORMANCE] Thread-Local Storage for Connection Pooling
+
 
     def get_connection(self) -> sqlite3.Connection:
-        # [SAFETY] Increased timeout to prevent 'database is locked' errors
-        return sqlite3.connect(self.db_path, timeout=settings.DEFAULT_TIMEOUT)
+        """
+        Get a thread-local database connection.
+        If a connection exists for this thread, reuse it.
+        Otherwise, create a new one.
+        """
+        # Check if we have a cached connection
+        conn = getattr(self._local, 'conn', None)
+        
+        is_closed = True
+        if conn:
+            try:
+                # Check if connection is valid by running a lightweight query
+                conn.execute("SELECT 1").close()
+                is_closed = False
+            except (sqlite3.ProgrammingError, sqlite3.InterfaceError):
+                # Connection is closed or invalid
+                is_closed = True
+            except Exception as e:
+                logger.warning(f"Unexpected error checking DB connection: {e}. Recreating.")
+                is_closed = True
+        
+        if is_closed:
+            # Create new connection for this thread
+            self._local.conn = sqlite3.connect(self.db_path, timeout=settings.DEFAULT_TIMEOUT)
+            # [OPTIMIZATION] Enable WAL mode for every new connection
+            self._local.conn.execute("PRAGMA journal_mode=WAL;")
+            self._local.conn.execute("PRAGMA synchronous=NORMAL;")
+            
+        return self._local.conn
 
     def init_db(self) -> None:
         """Initialize the SQLite database with required tables."""
@@ -58,6 +95,11 @@ class DataManager:
             )
         ''')
         
+        # [OPTIMIZATION] Index for faster range queries
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_ohlcv_ticker_date ON ohlcv (ticker, date);
+        ''')
+        
         # Metadata Table (for tracking last update)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS metadata (
@@ -82,7 +124,7 @@ class DataManager:
         """
         try:
             # [FIX] Sanitize ticker
-            ticker = sanitize_ticker(ticker)
+            ticker = src.utils.sanitize_ticker(ticker)
             
             for market, config in settings.MARKET_CONFIG.items():
                 # Check known symbols first
@@ -97,6 +139,12 @@ class DataManager:
                 suffixes = config.get('suffixes', [])
                 
                 if re.match(pattern, ticker):
+                    # [HOTFIX] Protection against US stocks being treated as Crypto
+                    # If this is CRYPTO market, and ticker is short (len<=5) and NOT known, skip it.
+                    # This prevents NVDA -> NVDA-USD.
+                    if market == 'CRYPTO' and len(ticker) <= 5 and ticker not in known:
+                        continue
+
                     # If it matches the pattern, try suffixes
                     if not suffixes:
                         # If US (no suffix), we can't easily distinguish from Crypto by pattern alone
@@ -185,6 +233,9 @@ class DataManager:
         
         all_dfs = []
         
+        # [OPTIMIZATION] Sticky Provider Logic: Start with Primary
+        current_provider = self.yf_provider
+
         for i, chunk_start_year in enumerate(chunk_start_years):
             chunk_end_year = min(chunk_start_year + settings.MAX_CHUNK_YEARS - 1, year_end)
             
@@ -207,40 +258,29 @@ class DataManager:
             # Provider Failover Logic
             df_chunk = pd.DataFrame()
             try:
-                # Step 1: Try YFinance
-                df_chunk = self.yf_provider.fetch_history(ticker, chunk_start, chunk_end)
+                # Step 1: Try Current Sticky Provider
+                df_chunk = current_provider.fetch_history(ticker, chunk_start, chunk_end)
             except Exception as e:
-                logger.warning(f"YFinance failed for {ticker} ({chunk_start} to {chunk_end}): {e}")
+                provider_name = type(current_provider).__name__
+                logger.warning(f"{provider_name} failed for {ticker} ({chunk_start} to {chunk_end}): {e}")
                 
-                # Step 2: Check if US stock (simple heuristic: no dot suffix, or explicit check)
-                # In this system, US stocks usually don't have suffixes like .TW
-                is_us_stock = '.' not in ticker
-                is_tw_stock = ticker.endswith('.TW') or ticker.endswith('.TWO')
-                is_crypto = ticker.endswith('-USD') and not is_tw_stock
-                
-                if is_tw_stock:
-                    try:
-                        # Step 3a: Fallback to TwStock
-                        logger.warning(f"Falling back to TwStock for {ticker}...")
-                        df_chunk = self.twstock_provider.fetch_history(ticker, chunk_start, chunk_end)
-                    except Exception as tw_e:
-                        logger.error(f"TwStock also failed for {ticker}: {tw_e}")
-                elif is_crypto:
-                    try:
-                        # Step 3b: Fallback to CCXT
-                        logger.warning(f"Falling back to CCXT for {ticker}...")
-                        df_chunk = self.ccxt_provider.fetch_history(ticker, chunk_start, chunk_end)
-                    except Exception as ccxt_e:
-                        logger.error(f"CCXT also failed for {ticker}: {ccxt_e}")
-                elif is_us_stock:
-                    try:
-                        # Step 3c: Fallback to Stooq
-                        logger.warning(f"Falling back to Stooq for {ticker}...")
-                        df_chunk = self.stooq_provider.fetch_history(ticker, chunk_start, chunk_end)
-                    except Exception as stooq_e:
-                        logger.error(f"Stooq also failed for {ticker}: {stooq_e}")
+                # If we are currently on Primary (YFinance), try to switch to Backup
+                if current_provider == self.yf_provider:
+                    backup = self._get_backup_provider(ticker)
+                    if backup:
+                        logger.warning(f"Switching to Backup Provider ({type(backup).__name__})...")
+                        current_provider = backup # [STICKY] Permanently switch for this session
+                        
+                        try:
+                            # Immediate Retry with New Provider
+                            df_chunk = current_provider.fetch_history(ticker, chunk_start, chunk_end)
+                        except Exception as e_backup:
+                            logger.error(f"Backup {type(current_provider).__name__} also failed: {e_backup}")
+                    else:
+                        logger.error(f"No backup provider found for {ticker}")
                 else:
-                    logger.error(f"No fallback available for stock {ticker}")
+                    # We were already on backup and it failed
+                    logger.error(f"Backup provider {provider_name} failed. No further fallback.")
 
             if not df_chunk.empty:
                 all_dfs.append(df_chunk)
@@ -342,25 +382,32 @@ class DataManager:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', data_tuples)
                 
-                # Update Metadata
-                today = datetime.now().strftime('%Y-%m-%d')
-                cursor.execute('''
-                    INSERT OR REPLACE INTO metadata (ticker, last_updated)
-                    VALUES (?, ?)
-                ''', (ticker, today))
+                # Update Metadata ONLY if we actually processed data
+                if len(data_tuples) > 0:
+                    today = datetime.now().strftime('%Y-%m-%d')
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO metadata (ticker, last_updated)
+                        VALUES (?, ?)
+                    ''', (ticker, today))
         finally:
             conn.close()
 
 
-    def get_data(self, ticker: str, include_sentiment: bool = False) -> pd.DataFrame:
-        """Load data from DB for a specific ticker."""
+    def get_data(self, ticker: str, include_sentiment: bool = False, start_date: Optional[str] = None, end_date: Optional[str] = None) -> pd.DataFrame:
+        """Load data from DB for a specific ticker with optional date range filtering."""
         # [FIX] Sanitize ticker
         ticker = sanitize_ticker(ticker)
+        
+        # Default dates for SQL query range
+        # Use simple string comparison for dates as they are ISO8601 YYYY-MM-DD
+        sql_start = start_date if start_date else "1900-01-01"
+        sql_end = end_date if end_date else "2099-12-31"
+
         conn = self.get_connection()
         try:
-            # Use parameterized query for safety, though ticker is internal
-            query = "SELECT * FROM ohlcv WHERE ticker=? ORDER BY date ASC"
-            df = pd.read_sql(query, conn, params=(ticker,))
+            # [OPTIMIZATION] SQL Range Query instead of loading full history
+            query = "SELECT * FROM ohlcv WHERE ticker=? AND date >= ? AND date <= ? ORDER BY date ASC"
+            df = pd.read_sql(query, conn, params=(ticker, sql_start, sql_end))
         finally:
             conn.close()
         
@@ -428,26 +475,53 @@ class DataManager:
         """
         Get the appropriate backup provider for a ticker.
         """
-        if ticker.endswith('.TW') or ticker.endswith('.TWO'):
+        market = detect_market(ticker)
+        if market == 'TW':
             return self.twstock_provider
-        elif ticker.endswith('-USD'):
+        elif market == 'CRYPTO':
             return self.ccxt_provider
         else:
-            # Assume US stock
+            # Assume US stock or Other
             return self.stooq_provider
 
-    def update_data_if_needed(self, ticker: str, progress_callback: Optional[Callable[[float, str], None]] = None, update_mode: Optional[str] = None) -> None:
+    def update_data_if_needed(self, ticker: str, progress_callback: Optional[Callable[[float, str], None]] = None, update_mode: Optional[str] = None, start_date: Optional[str] = None) -> None:
         """Check if data is stale and update if necessary."""
         
         mode = update_mode if update_mode else settings.DATA_UPDATE_MODE
+        calc_start = self._calc_smart_start(ticker)
+        
+        # Determine Final Start Date
+        final_start = None
         
         if mode == "INCREMENTAL":
-            # [REFACTOR] Use _calc_smart_start
-            start_date = self._calc_smart_start(ticker)
-            
+            # Smart Start Logic
+            # Priority: User Input > Calculated Start
             if start_date:
-                logger.info(f"Updating data for {ticker} from {start_date}...")
-                self.fetch_data(ticker, start_date=start_date, progress_callback=progress_callback)
+                # If no data exists (calc_start == 2000), use user input.
+                if calc_start == settings.DEFAULT_START_DATE:
+                    final_start = start_date
+                else:
+                    # We have some data.
+                    # For INCREMENTAL, we generally want to fill gaps or extend.
+                    # If user says 2020 but we have valid data until 2023, usage of max(2020, 2024ish)
+                    # protects against re-downloading.
+                    if calc_start is None:
+                        # Data is up to date relative to TODAY.
+                        logger.info(f"Data for {ticker} seems up to date (Calculated). ignoring user input {start_date} for INCREMENTAL safety.")
+                        final_start = None
+                    else:
+                        # Use the later date to avoid re-downloading overlap if not needed
+                        # BUT if user wants to fill a gap *before* existing data, INCREMENTAL isn't the right mode.
+                        # Assuming standard forward-fill usage:
+                        final_start = max(start_date, calc_start)
+            else:
+                 final_start = calc_start
+            
+            logger.info(f"Update Strategy: {mode}, User Start: {start_date}, Calculated: {calc_start}, Final: {final_start}")
+            
+            if final_start:
+                logger.info(f"Updating data for {ticker} from {final_start}...")
+                self.fetch_data(ticker, start_date=final_start, progress_callback=progress_callback)
             else:
                 logger.info(f"Data for {ticker} is up to date.")
                 if progress_callback:
@@ -457,10 +531,14 @@ class DataManager:
             logger.info(f"Running FULL VERIFICATION for {ticker}...")
             
             # Step 1: Fetch Full History from Primary (YFinance)
-            # We use fetch_history directly to avoid auto-insertion
+            # [FIX] Respect User Start Date if provided, otherwise default to 2000
+            verify_start_date = start_date if start_date else "2000-01-01"
+            
+            logger.info(f"Update Strategy: {mode}, User Start: {start_date}, Verify Start: {verify_start_date}")
+            
             try:
-                # Use a very early start date for full history
-                df_new_pri = self.yf_provider.fetch_history(ticker, "2000-01-01", datetime.now().strftime('%Y-%m-%d'))
+                # Use verify_start_date instead of hardcoded 2000-01-01
+                df_new_pri = self.yf_provider.fetch_history(ticker, verify_start_date, datetime.now().strftime('%Y-%m-%d'))
             except Exception as e:
                 logger.error(f"Primary provider failed for {ticker}: {e}")
                 return
@@ -647,6 +725,67 @@ class DataManager:
         finally:
             conn.close()
 
+    def hard_reset(self) -> None:
+        """
+        Hard Reset:
+        1. Close DB connection (self.get_connection returns new one, but allow garbage collection).
+        2. Delete SQLite DB file.
+        3. Clear Sentiment Cache directory.
+        4. Re-initialize DB.
+        """
+        logger.critical("Initiating HARD RESET. Deleting all data...")
+        
+        # 1. Delete DB File
+        if os.path.exists(self.db_path):
+            try:
+                os.remove(self.db_path)
+                logger.info(f"Deleted database file: {self.db_path}")
+            except Exception as e:
+                logger.error(f"Failed to delete database file: {e}")
+        
+        # 2. Clear Sentiment Cache
+        # We need the path. It's usually in self.news_engine.cache_dir if instantiated,
+        # otherwise we assume default location relative to src or config?
+        # DataManager doesn't strict depend on NewsEngine, but it's passed in __init__.
+        # If news_engine is None, we need a fallback path or just skip.
+        # But Requirement says: "src/data/sentiment_cache/"
+        
+        # Let's try to infer from news_engine first, or use default 'data/sentiment_cache'
+        # [FIX] Use Absolute Path from Settings
+        cache_dir = settings.DATA_DIR / "sentiment_cache"
+        if self.news_engine and hasattr(self.news_engine, 'cache_dir'):
+             # If news engine has a specific overridden path, use it, but ensure it's absolute if needed.
+             # Ideally we stick to standard structure.
+             pass
+            
+        # Ensure path is absolute or correct relative to CWD
+        # CWD in user info is d:\ai-quant-backtester
+        # We should use absolute path if possible, but standard is relative to project root.
+        
+        if os.path.exists(cache_dir):
+            try:
+                # Remove all files inside, but keep dir? Or remove dir and recreate?
+                # Requirement: "刪除 src/data/sentiment_cache/ 目錄下的所有檔案 (保留目錄本身)"
+                for filename in os.listdir(cache_dir):
+                    file_path = os.path.join(cache_dir, filename)
+                    try:
+                        if os.path.isfile(file_path) or os.path.islink(file_path):
+                            os.unlink(file_path)
+                        elif os.path.isdir(file_path):
+                            shutil.rmtree(file_path)
+                    except Exception as e:
+                        logger.error(f"Failed to delete {file_path}. Reason: {e}")
+                logger.info(f"Cleared sentiment cache at {cache_dir}")
+            except Exception as e:
+                logger.error(f"Failed to clear sentiment cache: {e}")
+        else:
+             logger.warning(f"Sentiment cache directory not found at {cache_dir}, skipping.")
+
+        # 3. Re-init DB
+        self.init_db()
+        logger.info("Database re-initialized. Hard reset complete.")
+
+
     def add_to_watchlist(self, symbol: str) -> None:
         """Add a symbol to the watchlist."""
         if not symbol or not symbol.strip():
@@ -688,16 +827,7 @@ class DataManager:
 
     def update_all_tracked_symbols(self, progress_callback: Optional[Callable[[float, str], None]] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, update_mode: Optional[str] = None) -> None:
         """
-        Update all symbols in the watchlist.
-        Smart logic:
-        - If no data: Download from 2000-01-01.
-        - If data exists: Download from last_updated + 1 day.
-        - If up-to-date: Skip.
-        
-        Overrides:
-        - If start_date is provided, it overrides the smart start date logic.
-        - If end_date is provided, it overrides the default end date (today).
-        - If update_mode is provided, it overrides the global setting.
+        Update all symbols in the watchlist using Parallel Execution.
         """
         watchlist = self.get_watchlist()
         if not watchlist:
@@ -705,62 +835,56 @@ class DataManager:
             return
         
         total = len(watchlist)
+        completed = 0
         
-        for i, symbol in enumerate(watchlist):
-            if progress_callback:
-                progress_callback(i / total, f"Checking {symbol} ({i+1}/{total})...")
-            
-            logger.info(f"Processing {symbol}...")
-            
-            current_start_date = start_date
-            current_end_date = end_date
-            
-            # If no start_date override, use smart logic
-            if not current_start_date:
-                # [REFACTOR] Use _calc_smart_start
-                smart_start = self._calc_smart_start(symbol)
-                if not smart_start:
-                    logger.info(f"{symbol} is up-to-date.")
-                    continue
-                current_start_date = smart_start
-            
-            # Determine mode for logging
-            current_mode = update_mode if update_mode else settings.DATA_UPDATE_MODE
-            logger.info(f"Updating {symbol} from {current_start_date} (Mode: {current_mode})...")
-            
-            # Pass update_mode to update_data_if_needed logic
-            # Wait, update_data_if_needed calls fetch_data, but update_data_if_needed ALSO has the mode logic now.
-            # But here we are calling fetch_data directly if start_date is set?
-            # NO, update_all_tracked_symbols calls fetch_data directly in the original code.
-            # We need to change this to call update_data_if_needed OR handle mode here.
-            
-            # Actually, update_data_if_needed was the one I modified to have the logic.
-            # But update_all_tracked_symbols calls fetch_data directly:
-            # self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None)
-            
-            # This bypasses the verification logic in update_data_if_needed!
-            # I need to refactor update_all_tracked_symbols to use update_data_if_needed OR duplicate the logic?
-            # Better to use update_data_if_needed, but update_data_if_needed calculates start date internally.
-            
-            # If I want to support start_date override AND verification, I should probably pass start_date to update_data_if_needed?
-            # But update_data_if_needed signature is (ticker, progress_callback, update_mode).
-            # It doesn't take start_date.
-            
-            # Let's modify update_data_if_needed to take start_date/end_date overrides?
-            # Or, simply call update_data_if_needed if no overrides, and if overrides, we assume manual fetch?
-            # But verification mode should work even with overrides?
-            # Actually, verification mode fetches FULL history (2000-01-01), so start_date override is irrelevant for FULL_VERIFY.
-            
-            # So:
-            if current_mode == "FULL_VERIFY":
-                # Call update_data_if_needed with mode, it will handle full fetch.
-                self.update_data_if_needed(symbol, progress_callback=None, update_mode=current_mode)
-            else:
-                # INCREMENTAL
-                self.fetch_data(symbol, start_date=current_start_date, end_date=current_end_date, progress_callback=None)
-            
-            # Sleep to avoid rate limit
-            time.sleep(settings.RATE_LIMIT_SLEEP)
+        # Helper function for single ticker update to be run in thread
+        def _update_single_ticker(symbol: str):
+            try:
+                # Local logging for thread
+                # Calculate start date
+                current_start_date = start_date
+                
+                if not current_start_date:
+                    smart_start = self._calc_smart_start(symbol)
+                    if not smart_start:
+                        return f"{symbol} is up-to-date."
+                    current_start_date = smart_start
+                
+                # Determine mode
+                current_mode = update_mode if update_mode else settings.DATA_UPDATE_MODE
+                
+                # Trigger update
+                # Note: We can reuse update_data_if_needed logic or call fetch_data directly.
+                # Since we calculated start_date, let's call fetch_data directly to avoid re-calc
+                # BUT logic in `update_data_if_needed` handles FULL_VERIFY vs INCREMENTAL.
+                # Let's delegate to `update_data_if_needed` but pass `update_mode` explicitly.
+                # However, `update_data_if_needed` does its own `_calc_smart_start` inside for INCREMENTAL.
+                # To avoid double calc, we can just let it handle it.
+                
+                self.update_data_if_needed(symbol, progress_callback=None, update_mode=current_mode, start_date=current_start_date)
+                return f"Updated {symbol}"
+            except Exception as e:
+                logger.error(f"Error updating {symbol}: {e}")
+                return f"Error {symbol}: {str(e)}"
 
-        if progress_callback:
-            progress_callback(1.0, "All symbols updated.")
+        # [OPTIMIZATION] Parallel Execution
+        logger.info(f"Starting parallel update for {total} symbols with max_workers=5...")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            # Submit all tasks
+            future_to_symbol = {executor.submit(_update_single_ticker, symbol): symbol for symbol in watchlist}
+            
+            for future in concurrent.futures.as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    result = future.result()
+                    logger.info(result)
+                except Exception as exc:
+                    logger.error(f'{symbol} generated an exception: {exc}')
+                
+                completed += 1
+                if progress_callback:
+                    progress_callback(completed / total, f"Updated ({completed}/{total}): {symbol}")
+        
+        logger.info("Parallel update complete.")
+

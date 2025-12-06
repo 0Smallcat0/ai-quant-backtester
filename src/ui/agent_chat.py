@@ -90,6 +90,8 @@ def render_agent_chat_page(dm=None):
 
     # --- 2. Chat Rendering ---
     
+    # --- 2. Chat Rendering ---
+    
     # Display chat messages from history on app rerun
     for message in st.session_state.agent_messages:
         role = message["role"]
@@ -100,13 +102,16 @@ def render_agent_chat_page(dm=None):
             with st.chat_message(role):
                 if role == "assistant":
                     # Parse thought and answer from stored content
-                    # We store the FULL content now to preserve thoughts
-                    thought, answer = split_thought_and_answer(content)
+                    from src.ai.utils_text import parse_agent_output, format_agent_log
+                    parsed = parse_agent_output(content)
+                    
+                    thought = parsed['thoughts']
+                    answer = parsed['answer']
                     
                     # 1. Expandable Thoughts
                     # Only show if there is meaningful thought content
-                    if thought and "無詳細過程" not in thought:
-                        with st.expander("🧠 思考過程與工具執行", expanded=False):
+                    if thought and "(無詳細過程)" not in thought:
+                        with st.expander("👁️ 查看思考過程 (Thoughts & Tools)", expanded=False):
                             st.markdown(format_agent_log(thought))
                     
                     # 2. Final Answer
@@ -133,73 +138,80 @@ def render_agent_chat_page(dm=None):
 
             # Display assistant response in chat message container
             with st.chat_message("assistant"):
-                # We want [Thoughts] then [Answer].
-                # We use two placeholders.
-                message_placeholder = st.empty() # Top slot
-                status_placeholder = st.empty()  # Bottom slot
+                # Placeholder for the "Thinking" status block
+                stream_placeholder = st.empty()
+                full_log = ""
+                pending_action_obj = None
+
+                # Phase 1: Thinking (Streaming)
+                # We render the status INSIDE the placeholder so we can clear it later.
+                with stream_placeholder.container():
+                    with st.status("🧠 AI 正在思考與撰寫...", expanded=True) as status:
+                        log_display = st.empty()
+                        
+                        try:
+                            # Call the agent with streaming
+                            response_generator = st.session_state.agent_instance.chat(
+                                prompt, 
+                                history=st.session_state.agent_messages,
+                                stream=True
+                            )
+                            
+                            # Streaming Loop
+                            for chunk in response_generator:
+                                # 1. Handle Tool Requests (PendingAction)
+                                if isinstance(chunk, PendingAction):
+                                    pending_action_obj = chunk
+                                    break
+                                
+                                # 2. Accumulate Text
+                                chunk_str = str(chunk)
+                                full_log += chunk_str
+                                
+                                # 3. Update UI (Raw Stream inside Status)
+                                log_display.markdown(full_log)
+                            
+                        except Exception as e:
+                            status.update(label="❌ 發生錯誤", state="error", expanded=True)
+                            st.error(f"An error occurred: {str(e)}")
+                            # Stop processing
+                            st.stop()
                 
-                # We use a status container for the "thinking" process in the bottom slot initially?
-                # Or just use the status_placeholder.
-                
-                # Streaming Phase: Use status_placeholder to show progress
-                with status_placeholder.status("🧠 AI 正在思考與執行工具...", expanded=True) as status:
-                    try:
-                        # Call the agent with streaming
-                        response_generator = st.session_state.agent_instance.chat(
-                            prompt, 
-                            history=st.session_state.agent_messages,
-                            stream=True
-                        )
-                        
-                        full_raw_response = ""
-                        pending_action_obj = None
-                        
-                        # Iterate through stream
-                        for chunk in response_generator:
-                            if isinstance(chunk, PendingAction):
-                                pending_action_obj = chunk
-                                break
-                            
-                            chunk_str = str(chunk)
-                            full_raw_response += chunk_str
-                            
-                            # Render content inside status for transparency during generation
-                            st.markdown(chunk_str)
-                            
-                        # Mark thinking as complete
-                        status.update(label="✅ 思考完成 (處理中...)", state="complete", expanded=False)
-                        
-                        if pending_action_obj:
-                            # Store pending action and rerun to show UI
-                            st.session_state.pending_action = pending_action_obj
-                            st.rerun()
-                        else:
-                            # Post-processing Phase
-                            
-                            # 1. Split content
-                            thought, answer = split_thought_and_answer(full_raw_response)
-                            
-                            # 2. Clear the status container (it served its purpose)
-                            status_placeholder.empty()
-                            
-                            # 3. Render clean UI
-                            # Uses message_placeholder (Top) for Thoughts
-                            if thought and "無詳細過程" not in thought:
-                                with message_placeholder.container():
-                                    with st.expander("🧠 思考過程與工具執行 (點擊展開)", expanded=False):
-                                        st.markdown(format_agent_log(thought))
-                            
-                            # Uses status_placeholder (Bottom) for Answer
-                            # Since we cleared it, we can reuse it or just write to st
-                            # (But we are in chat_message context, so st.write appends)
-                            # To be specific, let's write to the bottom slot
-                            status_placeholder.markdown(answer)
-                            
-                            # 4. Save FULL response to chat history
-                            # This allows re-rendering the thoughts later
-                            st.session_state.agent_messages.append({"role": "assistant", "content": full_raw_response})
-                        
-                    except Exception as e:
-                        status.update(label="❌ 發生錯誤", state="error", expanded=True)
-                        st.error(f"An error occurred: {str(e)}")
+                # Handling Pending Action (Interrupted Flow)
+                if pending_action_obj:
+                    # If pending action, we KEEP the status or transform it?
+                    # The user prompt doesn't strictly specify this edge case, 
+                    # but usually we want to see what led to the action.
+                    # Let's clean the placeholder and show it as a persistent thought block + pending UI.
+                    
+                    stream_placeholder.empty()
+                    
+                    # Parse what we have so far
+                    from src.ai.utils_text import parse_agent_output, format_agent_log
+                    parsed = parse_agent_output(full_log)
+                    
+                    with st.expander("👁️ 查看思考過程 (Thoughts & Tools)", expanded=True):
+                        st.markdown(format_agent_log(parsed['thoughts']))
+                    
+                    st.session_state.pending_action = pending_action_obj
+                    st.rerun()
+
+                else:
+                    # Phase 2: Completion (Standard Flow)
+                    # 1. Clear the "Thinking..." status block
+                    stream_placeholder.empty()
+                    
+                    # 2. Parse the final output
+                    from src.ai.utils_text import parse_agent_output, format_agent_log
+                    parsed = parse_agent_output(full_log)
+                    
+                    # 3. Render Thoughts (Collapsed)
+                    with st.expander("👁️ 查看思考過程 (Thoughts & Tools)", expanded=False):
+                        st.markdown(format_agent_log(parsed['thoughts']))
+                    
+                    # 4. Render Final Answer
+                    st.markdown(parsed['answer'])
+                    
+                    # 5. Save to History
+                    st.session_state.agent_messages.append({"role": "assistant", "content": full_log})
 

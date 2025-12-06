@@ -38,6 +38,33 @@ SENTIMENT_ANALYSIS_PROMPT = (
     "Format: JSON only. No markdown."
 )
 
+
+FINANCIAL_ABSA_PROMPT = (
+    "You are a sophisticated financial sentiment analyst. Perform Aspect-Based Sentiment Analysis (ABSA) on the provided text.\n"
+    "Identify specific entities (e.g., companies, sectors) and their associated attributes (e.g., revenue, legal, products).\n"
+    "For each entity-attribute pair, determine the sentiment polarity.\n\n"
+    "Input Text: {text}\n\n"
+    "Output MUST be a valid JSON object with the following structure:\n"
+    "{{\n"
+    "  \"Overall_Sentiment\": \"Positive\" | \"Negative\" | \"Neutral\" | \"Mixed\",\n"
+    "  \"Positive_Aspect\": [\"List of specific positive attributes found\"],\n"
+    "  \"Negative_Aspect\": [\"List of specific negative attributes found\"]\n"
+    "}}\n"
+    "Example:\n"
+    "Input: 'NVIDIA reported record revenue, but China export bans loom large.'\n"
+    "Output:\n"
+    "{{\n"
+    "  \"Overall_Sentiment\": \"Mixed\",\n"
+    "  \"Positive_Aspect\": [\"Record Revenue\", \"Strong Demand\"],\n"
+    "  \"Negative_Aspect\": [\"Regulatory Risk\", \"China Export Ban\"]\n"
+    "}}\n\n"
+    "Constraints:\n"
+    "1. Do not use Markdown formatting (no ```json code blocks).\n"
+    "2. Return RAW JSON only.\n"
+    "3. Be specific in lists."
+)
+
+
 # NOTE: Strategy generation prompts have been moved to src/ai/prompts_agent.py
 # SYSTEM_PROMPT has been deprecated and removed to prevent "Split Brain" issues.
 # Please query AGENT_SYSTEM_PROMPT from src.ai.prompts_agent instead.

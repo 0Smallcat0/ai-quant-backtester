@@ -1,133 +1,73 @@
 
-import unittest
-import pandas as pd
-import numpy as np
+import pytest
 from unittest.mock import MagicMock, patch
-from src.strategies.base import Strategy
+from src.data.sentiment_processor import SentimentAnalyzer
 
-# Mocking external dependency in test file context if needed, 
-# but we will import the real one inside the test method where we patch.
+@pytest.fixture
+def mock_pipeline():
+    with patch('src.data.sentiment_processor.FinBERTAnalyzer') as mock_finbert_cls, \
+         patch('src.data.sentiment_processor.ABSAAnalyzer') as mock_absa_cls:
+        
+        # Setup FinBERT instance
+        mock_finbert = mock_finbert_cls.return_value
+        # Mock predict: Return list of dicts {Neutral, Positive, Negative}
+        mock_finbert.predict.return_value = [
+            {'Neutral': 0.1, 'Positive': 0.8, 'Negative': 0.1}, # High Conf Pos
+            {'Neutral': 0.9, 'Positive': 0.05, 'Negative': 0.05} # Noise (should be filtered)
+        ]
+        
+        # Setup ABSA instance
+        mock_absa = mock_absa_cls.return_value
+        # Mock analyze_batch: Return list of dicts
+        mock_absa.analyze_batch.return_value = [
+            {'Overall_Sentiment': 'Positive', 'Positive_Aspect': ['Growth'], 'Negative_Aspect': []}
+        ]
+        
+        yield mock_finbert, mock_absa
 
-class DefensiveStrategy(Strategy):
-    """
-    Simulates the structure of the NEW AI-generated code with defensive logic.
-    """
-    def __init__(self, params=None):
-        super().__init__(params)
-        self.buy_threshold = 30
+def test_integration_flow(mock_pipeline):
+    mock_finbert, mock_absa = mock_pipeline
     
-    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        self.data = data.copy()
-        self.data.columns = [c.lower() for c in self.data.columns]
-        
-        # [DEFENSIVE LOGIC]
-        if 'sentiment' not in self.data.columns:
-            self.data['sentiment'] = 0.0
-        
-        self.data['sentiment'] = self.data['sentiment'].fillna(0.0)
-        
-        # Logic using sentiment
-        self.data['signal'] = 0
-        cond = (self.data['sentiment'] >= 0)
-        self.data.loc[cond, 'signal'] = 1
-        return self.data
-
-class FragileStrategy(Strategy):
-    """
-    Simulates the OLD AI-generated code without defense.
-    """
-    def __init__(self, params=None):
-        super().__init__(params)
-
-    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        self.data = data.copy()
-        self.data.columns = [c.lower() for c in self.data.columns]
-        
-        # Direct access - should fail if missing
-        cond = (self.data['sentiment'] >= 0) 
-        self.data['signal'] = 1
-        return self.data
-
-class TestSentimentIntegration(unittest.TestCase):
+    analyzer = SentimentAnalyzer()
     
-    def setUp(self):
-        # Create a dummy dataframe without sentiment
-        dates = pd.date_range(start='2023-01-01', periods=5)
-        self.df_no_sentiment = pd.DataFrame({
-            'open': [100, 101, 102, 103, 104],
-            'close': [102, 103, 101, 105, 106],
-            'volume': [1000, 1100, 1200, 1300, 1400]
-        }, index=dates)
-        
-        self.df_with_sentiment = self.df_no_sentiment.copy()
-        self.df_with_sentiment['sentiment'] = [0.1, 0.2, -0.1, 0.0, 0.5]
+    news_list = [
+        {'title': 'Good News', 'summary': 'Profits up'},
+        {'title': 'Boring News', 'summary': 'Nothing happened'}
+    ]
+    
+    score = analyzer.analyze_news(news_list, "AAPL")
+    
+    # Verification
+    # 1. FinBERT called with all items
+    assert mock_finbert.predict.call_count == 1
+    args, _ = mock_finbert.predict.call_args
+    assert len(args[0]) == 2
+    
+    # 2. ABSA called only with "Good News" (filtered noise)
+    assert mock_absa.analyze_batch.call_count == 1
+    args_absa, _ = mock_absa.analyze_batch.call_args
+    assert len(args_absa[0]) == 1
+    assert "Good News" in args_absa[0][0]
+    
+    # 3. Score Calculation
+    # FinBERT Score: 0.8 - 0.1 = 0.7
+    # ABSA Score: 1.0 (Positive)
+    # Aspect Boost: 1.2
+    # Combined: (0.6*0.7 + 0.4*1.0) * 1.2 = (0.42 + 0.4) * 1.2 = 0.82 * 1.2 = 0.984
+    
+    assert score > 0.9
 
-    def test_case_1a_fragile_strategy_fails(self):
-        """Verify that the old strategy pattern fails when sentiment is missing."""
-        strategy = FragileStrategy()
-        with self.assertRaises(KeyError):
-            strategy.generate_signals(self.df_no_sentiment)
-            
-    def test_case_1b_defensive_strategy_succeeds(self):
-        """Verify that the new defensive pattern works even when sentiment is missing."""
-        strategy = DefensiveStrategy()
-        try:
-            result = strategy.generate_signals(self.df_no_sentiment)
-            self.assertIn('sentiment', result.columns)
-            self.assertTrue((result['sentiment'] == 0.0).all())
-            self.assertIn('signal', result.columns)
-        except KeyError:
-            self.fail("DefensiveStrategy raised KeyError unexpectedly!")
-
-    @patch('src.data_engine.DataManager.get_connection')
-    def test_case_2_data_manager_integration(self, mock_conn):
-        """
-        Verify DataManager.get_data(include_sentiment=True) returns a 'sentiment' column
-        even if the underlying data source fails or returns nothing (it should default to 0.0).
-        """
-        # We need to import the REAL DataManager to test its logic
-        from src.data_engine import DataManager as RealDataManager
-        
-        # Mock DB return for basic data
-        mock_db_df = self.df_no_sentiment.copy().reset_index()
-        # pandas read_sql usually returns date as object/string or datetime depending on driver
-        # DataManager.get_data expects columns to be present.
-        # It also expects 'ticker' column usually if it does `SELECT *` but logic might filter it out?
-        # get_data calls `SELECT * FROM ohlcv`. So ticker column is there.
-        mock_db_df['ticker'] = "TEST"
-        mock_db_df.rename(columns={'index': 'date'}, inplace=True)
-        
-        # We mock pandas read_sql to return our df
-        with patch('pandas.read_sql', return_value=mock_db_df):
-            dm = RealDataManager(db_path=":memory:")
-            
-            # 1. Test Default (False)
-            df_default = dm.get_data("TEST")
-            self.assertNotIn('sentiment', df_default.columns)
-            
-            # 2. Test Include Sentiment (True)
-            # We mock NewsEngine to return empty/fail to see if fallback works
-            # Or we can rely on the fact that NewsEngine is None by default in the test instance
-            # The code: engine = self.news_engine if self.news_engine else NewsEngine()
-            # If we don't mock NewsEngine class, it might try to instantiate real one.
-            
-            with patch('src.data_engine.NewsEngine') as MockNewsEngine:
-                # Mock instance
-                mock_engine_instance = MockNewsEngine.return_value
-                # Mock get_sentiment to return a Series
-                mock_engine_instance.get_sentiment.return_value = pd.Series(
-                    [0.5, 0.5, 0.5, 0.5, 0.5], index=self.df_no_sentiment.index, name='sentiment'
-                )
-                
-                # We need to inject this engine or let logic create it. 
-                # dm = RealDataManager(..., news_engine=mock_engine_instance)
-                dm.news_engine = mock_engine_instance
-                
-                df_sentiment = dm.get_data("TEST", include_sentiment=True)
-                
-                self.assertIn('sentiment', df_sentiment.columns)
-                # Verify it merged correctly
-                self.assertEqual(df_sentiment['sentiment'].iloc[0], 0.5)
-
-if __name__ == '__main__':
-    unittest.main()
+def test_integration_all_noise(mock_pipeline):
+    mock_finbert, mock_absa = mock_pipeline
+    
+    # Override FinBERT to return only noise
+    mock_finbert.predict.return_value = [
+        {'Neutral': 0.9, 'Positive': 0.05, 'Negative': 0.05}
+    ]
+    
+    analyzer = SentimentAnalyzer()
+    score = analyzer.analyze_news([{'title': 'Boring', 'summary': '..'}] , "AAPL")
+    
+    # ABSA should NOT be called
+    mock_absa.analyze_batch.assert_not_called()
+    assert score == 0.0

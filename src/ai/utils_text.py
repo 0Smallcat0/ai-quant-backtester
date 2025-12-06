@@ -69,12 +69,12 @@ def format_agent_log(raw_text: str) -> str:
              icon = "🔍"
              action_name = "搜尋"
              
-        # Format: 📂 **讀取檔案**: `path`
-        # or block style if content is multiline
+        # Format: > 🛠️ **Tool:** ...
+        # Use blockquote for better visual separation
         if '\n' in content or len(content) > 50:
-             return f"\n\n{icon} **{action_name}** ({code}):\n```\n{content}\n```\n"
+             return f"\n> {icon} **{action_name}** ({code}):\n> ```\n> {content}\n> ```\n"
         else:
-             return f"\n\n{icon} **{action_name}**: `{content}`\n"
+             return f"\n> {icon} **{action_name}**: `{content}`\n"
 
     # Match <tool ...>...</tool>
     # Group 1: attributes part, Group 2: content
@@ -85,7 +85,7 @@ def format_agent_log(raw_text: str) -> str:
     formatted = re.sub(r'^Thought:\s*(.*)', r'🤔 **思考**: \1', formatted, flags=re.MULTILINE)
     
     # 3. Format Tool Output
-    formatted = re.sub(r'^Tool Output:\s*', r'⚙️ **執行結果**: ', formatted, flags=re.MULTILINE)
+    formatted = re.sub(r'^Tool Output:\s*(.*)', r'⚙️ **執行結果**: \1', formatted, flags=re.MULTILINE)
 
     return formatted.strip()
 
@@ -118,10 +118,13 @@ def split_thought_and_answer(raw_text: str) -> tuple[str, str]:
     for m in re.finditer(r'^Tool Output:.*$', raw_text, re.MULTILINE):
         max_log_index = max(max_log_index, m.end())
         found_any_log = True
-
+        
+    # 4. Handle partially closed tags or truncated XML if necessary
+    # If we see an opening <tool but no closing </tool>, we might consider the whole thing as thought if it's at the end.
+    # But for now, let's stick to explicit markers.
+    
     # If no logs found at all, treat everything as answer, but provide a placeholder for thought
     if not found_any_log:
-        # Check if it looks like a direct answer
         return "(無詳細過程)", raw_text
         
     thought_part = raw_text[:max_log_index].strip()
@@ -130,7 +133,55 @@ def split_thought_and_answer(raw_text: str) -> tuple[str, str]:
     if not thought_part:
         thought_part = "(無詳細過程)"
         
+    # Robustness: If answer starts with a closing tag fragment due to regex issues, clean it
+    if answer_part.startswith('</tool>'):
+        answer_part = answer_part[7:].strip()
+        
     return thought_part, answer_part
 
 # Alias for backward compatibility if needed
 extract_final_answer = sanitize_agent_output
+
+
+def parse_agent_output(raw_text: str) -> dict:
+    """
+    Parses the agent's output to separate the thinking process from the final answer.
+    
+    The 'thoughts' section includes:
+    - "Thought: ..." lines
+    - "<tool>...</tool>" blocks
+    - "Tool Output: ..." lines
+    
+    The 'answer' section is the remaining text, typically at the end.
+    
+    Args:
+        raw_text (str): The full raw output string from the agent.
+        
+    Returns:
+        dict: A dictionary with keys 'thoughts' (str) and 'answer' (str).
+    """
+    if not raw_text:
+        return {'thoughts': "(無詳細過程)", 'answer': ""}
+        
+    # We reuse the logic from split_thought_and_answer but return a dict
+    thought_part, answer_part = split_thought_and_answer(raw_text)
+    
+    # If the logic in split_thought_and_answer is not sufficient (it was a tuple return),
+    # we might want to enhance it here or inside split_thought_and_answer.
+    # Looking at the previous implementation of split_thought_and_answer:
+    # It finds the max index of </tool>, Thought:, and Tool Output:.
+    # This seems correct for the requirements. 
+    # Let's double check if we need to improve split_thought_and_answer itself 
+    # or just wrap it.
+    
+    # The requirement says:
+    # "Using Regex to separate..."
+    # "If unable to separate, treat <tool> before as thoughts".
+    
+    # split_thought_and_answer implementation seems to cover this generally,
+    # finding the LAST occurrence of log-like markers.
+    
+    return {
+        'thoughts': thought_part,
+        'answer': answer_part
+    }

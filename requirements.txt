@@ -12,3 +12,7 @@ ccxt
 pandas-datareader
 pytest
 numba>=0.57.0
+transformers
+torch
+scipy
+riskfolio-lib

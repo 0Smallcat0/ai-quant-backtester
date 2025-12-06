@@ -1,4 +1,5 @@
 import feedparser
+import pandas as pd
 import urllib.parse
 from bs4 import BeautifulSoup
 import logging
@@ -10,6 +11,7 @@ import pytz
 from dateutil import parser
 import difflib
 from cachetools import TTLCache, cached
+import chardet
 import requests
 
 class NewsFetcher:
@@ -190,13 +192,23 @@ class NewsFetcher:
                 
         return score
 
-    def fetch_headlines(self, ticker: str, name: Optional[str] = None, market: str = 'US') -> List[Dict[str, str]]:
+    def fetch_headlines(self, ticker: str, name: Optional[str] = None, market: str = 'US', start_date: Optional[str] = None) -> List[Dict[str, str]]:
         """
         Fetches top 5 news headlines after filtering and ranking.
         Returns empty list on failure.
         """
         # Warning about Look-ahead Bias
         logging.getLogger(__name__).warning(f"Fetching REAL-TIME news for {ticker}. CAUTION: This may introduce look-ahead bias if used for historical backtesting.")
+        
+        # [WARNING] Historical Data Limitation
+        if start_date:
+            try:
+                # Simple check for > 30 days
+                s_dt = pd.to_datetime(start_date)
+                if (pd.Timestamp.now() - s_dt).days > 30:
+                    self.logger.warning(f"WARNING: NewsFetcher limitations - Historical news prior to {start_date} is NOT available via RSS. Sentiment will be 0.0.")
+            except Exception as e:
+                self.logger.warning(f"Error checking start_date limit: {e}")
         
         # Check Cache
         cache_key = f"{ticker}_{market}"
@@ -205,14 +217,36 @@ class NewsFetcher:
             return self._cache[cache_key]
             
         try:
-            url = self._build_query(ticker, name, market)
+            # Auto-detect market based on ticker suffix
+            effective_market = market
+            search_ticker = ticker
+            
+            if ticker.endswith('.TW') or ticker.endswith('.TWO'):
+                effective_market = 'TW'
+                # Remove suffix for better search results (e.g., "2330" instead of "2330.TW")
+                search_ticker = ticker.split('.')[0]
+            
+            url = self._build_query(search_ticker, name, effective_market)
             
             # [OPTIMIZATION] Resilience: Use requests with timeout and headers, then parse string
             # feedparser's remote fetching is flaky.
             import requests
             response = requests.get(url, headers=self.request_headers, timeout=self.timeout)
+            
+            # [FIX] Encoding Detection (Mojibake Fix)
+            # If TW, prioritize Big5 (common in legacy TW news feeds)
+            if effective_market == 'TW':
+                 # Force Big5 for TW if standard detection fails or is ambiguous
+                 # We assume TW sources are either UTF-8 or Big5.
+                 if response.encoding.lower() not in ['utf-8', 'utf8']:
+                    response.encoding = 'big5'
+            elif response.encoding.lower() not in ['utf-8', 'utf8']:
+                detected = chardet.detect(response.content)
+                if detected['encoding']:
+                    response.encoding = detected['encoding']
+            
             response.raise_for_status()
-            feed = feedparser.parse(response.content)
+            feed = feedparser.parse(response.text) # Use .text to use the decoded unicode
             
             headlines = []
             # Fetch 100 first, then filter (Increased to 100 to ensure top-5 survival)
@@ -220,7 +254,7 @@ class NewsFetcher:
             count_fetched = len(all_entries)
             
             # Apply Filtering
-            clean_entries = self._filter_noise(all_entries, market)
+            clean_entries = self._filter_noise(all_entries, effective_market)
             count_after_noise = len(clean_entries)
             
             # --- Impact Ranking ---
@@ -228,7 +262,31 @@ class NewsFetcher:
             for entry in clean_entries:
                 title = entry.get('title', '')
                 link = entry.get('link', '')
-                score = self._calculate_impact_score(title, link, market)
+                score = self._calculate_impact_score(title, link, effective_market)
+                # [FIX] Stale Data Filtering
+                # Google RSS sometimes returns ancient news (e.g., 2018) for generic queries.
+                # We strictly filter out anything older than 30 days to prevent "Linear Artifacts".
+                published_str = entry.get('published', '')
+                try:
+                    dt_pub = parser.parse(published_str)
+                    # Convert to UTC for comparison
+                    if dt_pub.tzinfo is None:
+                        dt_pub = dt_pub.replace(tzinfo=pytz.UTC)
+                    else:
+                        dt_pub = dt_pub.astimezone(pytz.UTC)
+                        
+                    # Calculate age
+                    now_utc = datetime.now(pytz.UTC)
+                    age_days = (now_utc - dt_pub).days
+                    
+                    if age_days > 30:
+                        # Skip stale news
+                        continue
+                except Exception:
+                    # If date is unparseable, let it pass (normalize_date will handle it or fallback to today)
+                    # OR safely skip. Safest is to skip if we can't verify freshness.
+                    pass
+
                 scored_entries.append((score, entry))
             
             # Sort by Score (Desc)
@@ -240,6 +298,11 @@ class NewsFetcher:
             
             # Limit to Top N (from settings)
             limit = settings.NEWS_TOP_N_LIMIT
+            
+            # [FIX] Crypto Sparsity: Increase limit for Crypto to find older news if recent is scarce
+            if effective_market == 'CRYPTO':
+                limit = 30 
+                
             final_entries = sorted_entries[:limit]
             count_final = len(final_entries)
             
@@ -251,7 +314,7 @@ class NewsFetcher:
                 published = entry.get('published', '')
                 
                 # Normalize Date
-                date_str = self._normalize_date(published, market)
+                date_str = self._normalize_date(published, effective_market)
                 
                 headlines.append({
                     "title": entry.get('title', ''),

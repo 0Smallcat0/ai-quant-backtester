@@ -37,6 +37,16 @@ class StrategyLoader:
             if re.search(pattern, code_str):
                 raise StrategyLoadError(f"Security Violation: Detected potential look-ahead bias pattern '{pattern}'. Future data access is forbidden.")
 
+        # SSOT & Best Practices Validation (Warning Only)
+        warnings = []
+        if re.search(r'^\s*from\s+\.', code_str, re.MULTILINE):
+             warnings.append("Relative import detected (e.g. 'from .base'). Please use absolute imports (e.g. 'from src.strategies.base').")
+        if re.search(r'import\s+matplotlib', code_str) or re.search(r'from\s+matplotlib', code_str):
+             warnings.append("Visual library 'matplotlib' detected. UI logic should be separate from Strategy logic.")
+        
+        if warnings:
+            print(f"Strategy Validation Warnings:\n" + "\n".join(warnings))
+
         try:
             # Execute the code in a restricted namespace
             # We use the same dictionary for globals and locals to ensure imports are visible
@@ -53,6 +63,7 @@ class StrategyLoader:
 
         # Find the class that inherits from Strategy
         strategy_class = None
+        # ... rest of finding class logic
         for name, obj in namespace.items():
             if isinstance(obj, type) and issubclass(obj, Strategy) and obj is not Strategy:
                 strategy_class = obj
@@ -208,3 +219,43 @@ class StrategyLoader:
                 return strategy_class(**valid_params)
         except Exception as e:
             raise StrategyLoadError(f"Error instantiating preset '{strategy_name}': {e}")
+
+    def fuzzy_search(self, strategy_name: str) -> type:
+        """
+        Searches for a strategy class using fuzzy matching logic.
+        
+        Priority:
+        1. Exact match (File or Preset) via load_strategy
+        2. Suffix auto-complete (e.g. "RSI" -> "RSIStrategy") in Presets
+        3. Case-insensitive search in Presets
+        
+        Args:
+            strategy_name (str): The name to search for.
+            
+        Returns:
+            type: The found strategy class.
+            
+        Raises:
+            StrategyLoadError: If no strategy matches.
+        """
+        # 1. Try standard load (File or Exact Match)
+        try:
+            return self.load_strategy(strategy_name)
+        except StrategyLoadError:
+            pass # Continue to fuzzy search
+
+        # Import presets for fuzzy matching
+        from src.strategies.presets import PRESET_STRATEGIES
+
+        # 2. Suffix Auto-complete
+        suffix_name = f"{strategy_name}Strategy"
+        if suffix_name in PRESET_STRATEGIES:
+            return PRESET_STRATEGIES[suffix_name]
+
+        # 3. Case-Insensitive Search
+        target_upper = strategy_name.upper()
+        for name, cls in PRESET_STRATEGIES.items():
+            if name.upper() == target_upper or name.upper() == f"{target_upper}STRATEGY":
+                return cls
+        
+        raise StrategyLoadError(f"Strategy '{strategy_name}' not found checking: [Files, Exact Preset, Suffix, Case-Insensitive].")

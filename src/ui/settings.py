@@ -1,5 +1,7 @@
 import streamlit as st
 import os
+import time
+import json
 import json
 from dotenv import load_dotenv, set_key
 from src.config.settings import settings
@@ -177,6 +179,24 @@ def render_global_settings_page(dm):
                 step=100.0
             )
 
+    # --- Feature Config ---
+    st.subheader("🛠️ Feature Toggle")
+    # Load from session or env
+    current_sentiment_status = st.session_state.get('enable_sentiment')
+    if current_sentiment_status is None:
+        # Check Env
+        env_val = os.getenv("ENABLE_SENTIMENT", "True").lower()
+        current_sentiment_status = (env_val == "true")
+        st.session_state['enable_sentiment'] = current_sentiment_status
+        
+    enable_sentiment = st.checkbox(
+        "Enable News Sentiment Analysis",
+        value=current_sentiment_status,
+        help="If disabled, 'Update All Data' will skip Phase 2 (Sentiment Analysis) to save time and tokens."
+    )
+    if enable_sentiment != st.session_state['enable_sentiment']:
+        st.session_state['enable_sentiment'] = enable_sentiment
+
     # --- HRP Settings ---
     st.subheader("🧩 HRP Settings")
     c_hrp1, c_hrp2 = st.columns(2)
@@ -216,6 +236,7 @@ def render_global_settings_page(dm):
             
             set_key(env_path, "API_KEY", api_key_input)
             set_key(env_path, "MODEL_NAME", selected_model) # Save selected model
+            set_key(env_path, "ENABLE_SENTIMENT", str(enable_sentiment).lower()) # Save sentiment toggle
             if base_url_input:
                 set_key(env_path, "LLM_BASE_URL", base_url_input)
             else:
@@ -228,6 +249,27 @@ def render_global_settings_page(dm):
             st.success(f"Settings saved to current session! Using model: {selected_model}")
             
         # Force a rerun to ensure changes propagate immediately if needed
+        st.rerun()
+
+    # --- Danger Zone ---
+    st.markdown("---")
+    with st.expander("⚠️ Danger Zone"):
+        st.error("This area is dangerous. Actions here are irreversible.")
+        
+        st.write("### ☢️ Purge All Data")
+        st.write("This will delete the entire database (`market_data.db`) and clear the sentiment cache.")
+        
+        if st.button("☢️ PURGE ALL DATA (HARD RESET)", type="primary"):
+            # Double confirmation mechanism could be added here, but simple button requested for now
+            with st.spinner("Purging all data..."):
+                try:
+                    dm.hard_reset()
+                    st.success("Hard Reset Completed! All data purged.")
+                    # Force reload
+                    time.sleep(1)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Reset Failed: {e}")
 
 
 

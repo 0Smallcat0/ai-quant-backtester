@@ -4,15 +4,7 @@ import logging
 from pathlib import Path
 from src.config.settings import settings
 
-def setup_logging(name: str = __name__) -> logging.Logger:
-    """
-    Configure and return a logger instance with standardized settings.
-    """
-    logging.basicConfig(
-        level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO),
-        format=settings.LOG_FORMAT
-    )
-    return logging.getLogger(name)
+
 
 def sanitize_ticker(ticker: str) -> str:
     """
@@ -51,24 +43,50 @@ def add_project_root() -> None:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
 
-def categorize_ticker(ticker: str) -> str:
+def detect_market(ticker: str) -> str:
     """
-    Categorize ticker symbol into:
-    - Crypto: Ends with -USD
-    - TW: Ends with .TW or .TWO
-    - US: Alpha only (e.g. AAPL)
-    - Other: Everything else
+    Detect market type for a given ticker using settings.MARKET_CONFIG.
+    Returns: 'TW', 'CRYPTO', 'US', or 'Other'
     """
     if not ticker:
         return "Other"
         
     ticker = ticker.upper().strip()
     
-    if ticker.endswith("-USD"):
-        return "Crypto"
-    if ticker.endswith(".TW") or ticker.endswith(".TWO"):
-        return "TW"
-    if ticker.isalpha():
-        return "US"
-        
+    # 1. Check suffixes/patterns from config
+    # We iterate through config to find a match
+    # MARKET_CONFIG is { 'TW': ..., 'CRYPTO': ..., 'US': ... }
+    
+    # Priority: Suffix match > Pattern match (if safe)
+    
+    for market, config in settings.MARKET_CONFIG.items():
+        # Check Known set first (for Crypto mostly)
+        known = config.get('known', set())
+        if ticker in known:
+            return market
+
+        suffixes = config.get('suffixes', [])
+        for suffix in suffixes:
+            if ticker.endswith(suffix):
+                return market
+                
+    # If no suffix match, check patterns
+    import re
+    for market, config in settings.MARKET_CONFIG.items():
+        pattern = config.get('pattern')
+        if pattern and re.match(pattern, ticker):
+            # Special handling for default implicit markets (US vs Crypto)
+            # US pattern matches all alphas, Crypto also matches all alphas
+            # We usually rely on suffix or 'known' for Crypto.
+            
+            # If it's CRYPTO but not in known and no suffix, we might want to skip 
+            # effectively treating it as US if pattern overlaps
+            if market == 'CRYPTO':
+                # Crypto usually requires explicit -USD or being in 'known'
+                continue
+                
+            return market
+            
     return "Other"
+
+

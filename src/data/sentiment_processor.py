@@ -3,92 +3,166 @@ import logging
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Optional
-from src.ai.llm_client import LLMClient
-from src.ai.prompts import SENTIMENT_ANALYSIS_PROMPT
 from src.config.settings import settings
-import re
+from src.analytics.sentiment.finbert_analyzer import FinBERTAnalyzer
+from src.analytics.sentiment.absa_analyzer import ABSAAnalyzer
 
 class SentimentAnalyzer:
     """
-    Analyzes news sentiment using LLM.
+    Modernized hybrid sentiment analyzer:
+    1. Filter: FinBERT (Tone Analysis)
+    2. Analyze: LLM ABSA (Aspect-Based)
+    3. Synthesize: Weighted Scoring
     """
-    """
-    Analyzes news sentiment using LLM.
-    """
-    def __init__(self, llm_client: Optional[LLMClient] = None):
-        self.llm_client = llm_client if llm_client else LLMClient()
-        self.system_prompt = SENTIMENT_ANALYSIS_PROMPT
+    def __init__(self, llm_client: Optional[object] = None):
         self.logger = logging.getLogger(__name__)
+        self.mode = settings.SENTIMENT_MODEL_TYPE
+        self.llm_client = llm_client
+        
+        # Lazy loading to save resources if not used
+        self.finbert = None
+        self.absa = None
+
+    def _load_models(self):
+        if self.finbert is None:
+            try:
+                self.finbert = FinBERTAnalyzer(model_name=settings.FINBERT_PATH)
+            except Exception as e:
+                self.logger.error(f"Failed to load FinBERT: {e}")
+                
+        if self.absa is None:
+            try:
+                self.absa = ABSAAnalyzer(llm_client=self.llm_client, model_id=settings.ABSA_MODEL_PATH)
+            except Exception as e:
+                self.logger.error(f"Failed to load ABSA: {e}")
 
     def analyze_news(self, news_list: List[Dict], ticker: str) -> float:
         """
-        Generates a sentiment score (-1.0 to 1.0) for the given news list.
+        Generates a sentiment score (-1.0 to 1.0) for the given news list using Hybrid Pipeline.
         """
         if not news_list:
             return 0.0
 
-        # 1. Compact Format & Smart Truncation
-        # Limit each news item to 500 chars to ensure diversity in context
-        MAX_ITEM_LEN = 500
-        full_text = ""
-        for idx, item in enumerate(news_list, 1):
-            title = item.get('title', 'No Title')
-            summary = item.get('summary', 'No Summary')
-            # Combine and truncate
-            entry = f"{idx}. {title} ({summary})"
-            if len(entry) > MAX_ITEM_LEN:
-                entry = entry[:MAX_ITEM_LEN] + "..."
-            full_text += f"{entry}\n"
-
-        # 2. Global Truncation (Safety Net)
-        if len(full_text) > settings.LLM_MAX_INPUT_CHARS:
-            full_text = full_text[:settings.LLM_MAX_INPUT_CHARS] + "...(truncated)"
-
-        # 3. Call LLM
-        prompt = f"Ticker: {ticker}\n\nNews:\n{full_text}"
-        
-        # Format system prompt with ticker
-        formatted_system_prompt = self.system_prompt.replace("{Ticker}", ticker)
-
-        messages = [
-            {"role": "system", "content": formatted_system_prompt},
-            {"role": "user", "content": prompt}
-        ]
-
-        try:
-            # Use temperature=0.0 for deterministic, analytical output
-            response_str = self.llm_client.get_completion(messages=messages, temperature=0.0)
-            
-            # 4. Parse JSON with Regex (Robustness)
-            cleaned_response = self.llm_client.clean_code(response_str)
-            
-            try:
-                # Attempt to find JSON object pattern
-                match = re.search(r'\{.*\}', cleaned_response, re.DOTALL)
-                if match:
-                    json_str = match.group(0)
-                    data = json.loads(json_str)
-                else:
-                    # Fallback to direct load if regex fails (unlikely but safe)
-                    data = json.loads(cleaned_response)
-            except json.JSONDecodeError:
-                self.logger.warning(f"JSON Decode Error for {ticker}. Response: {cleaned_response[:100]}...")
-                return 0.0
-                
-            sentiment = float(data.get('sentiment', 0.0))
-            relevance = float(data.get('relevance', 0.0))
-            
-            # Clamp values
-            sentiment = max(-1.0, min(1.0, sentiment))
-            relevance = max(0.0, min(1.0, relevance))
-            
-            final_score = sentiment * relevance
-            return final_score
-
-        except Exception as e:
-            self.logger.error(f"Error analyzing sentiment for {ticker}: {e}")
+        if self.mode != "local_hybrid":
+            self.logger.warning("Legacy mode not supported in this version. Please set SENTIMENT_MODEL_TYPE='local_hybrid'")
             return 0.0
 
+        self._load_models()
+        if not self.finbert or not self.absa:
+             self.logger.error("Models not loaded. Returning 0.")
+             return 0.0
+
+        # Step 1: Pre-process and Batch for FinBERT
+        processed_texts = []
+        original_map = [] # Map index to original item
+        
+        for item in news_list:
+            title = item.get('title', '')
+            summary = item.get('summary', '')
+            text = f"{title}. {summary}"
+            processed_texts.append(text)
+            original_map.append(item)
+
+        # Step 2: FinBERT Filter
+        try:
+            finbert_results = self.finbert.predict(processed_texts)
+        except Exception as e:
+            self.logger.error(f"FinBERT prediction failed: {e}")
+            return 0.0
+
+        high_confidence_items = []
+        
+        # Filter logic
+        for i, res in enumerate(finbert_results):
+            neutral_score = res.get('Neutral', 0.0)
+            if neutral_score > settings.SENTIMENT_FILTER_THRESHOLD: # > 0.85
+                continue # Skip noise
+            
+            # Keep interesting items
+            # We pass the text and the FinBERT score to the next stage
+            high_confidence_items.append({
+                'text': processed_texts[i],
+                'finbert_score': res, # {'Positive', 'Negative', 'Neutral'}
+                'original': original_map[i]
+            })
+
+        if not high_confidence_items:
+            self.logger.info(f"No significant news found for {ticker} after filtering.")
+            return 0.0
+
+        # Step 3: LLM ABSA Analysis (OPTIMIZED COST-SAVING)
+        # We only analyze items where FinBERT is "Sure but needs nuance"
+        # If FinBERT is weak (Polarity < 0.5), we trust FinBERT alone and save LLM token cost.
+        
+        absa_results_map = {} # Map index in high_confidence_items -> absa_result
+        texts_to_analyze = []
+        indices_to_analyze = []
+        
+        for idx, item in enumerate(high_confidence_items):
+            fin_res = item['finbert_score']
+            polarity = fin_res['Positive'] - fin_res['Negative']
+            item['polarity'] = polarity # Store for synthesis
+            
+            # THE ANALYST GATEKEEPER
+            if abs(polarity) > 0.5:
+                texts_to_analyze.append(item['text'])
+                indices_to_analyze.append(idx)
+            # Else: skip LLM, use default neutral structure
+        
+        if texts_to_analyze:
+            try:
+                batch_results = self.absa.analyze_batch(texts_to_analyze)
+                for i, res in enumerate(batch_results):
+                    absa_results_map[indices_to_analyze[i]] = res
+            except Exception as e:
+                self.logger.error(f"ABSA prediction failed: {e}")
+                # Fallbck: map stays empty
+
+        # Step 4: Signal Synthesis
+        total_score = 0.0
+        count = 0
+        
+        for i, item in enumerate(high_confidence_items):
+            f_score = item['polarity']
+            
+            # Check if we have ABSA result
+            if i in absa_results_map:
+                absa_res = absa_results_map[i]
+                
+                a_sentiment = absa_res.get('Overall_Sentiment', 'Neutral')
+                a_score = 0.0
+                if a_sentiment == 'Positive':
+                    a_score = 1.0
+                elif a_sentiment == 'Negative':
+                    a_score = -1.0
+                
+                # Check for aspects (Boost score if aspect is relevant)
+                aspect_boost = 1.0
+                if absa_res.get('Positive_Aspect') or absa_res.get('Negative_Aspect'):
+                    aspect_boost = 1.2
+                
+                # Weighted Combination: 60% FinBERT, 40% ABSA
+                combined_score = (0.6 * f_score + 0.4 * a_score) * aspect_boost
+            
+            else:
+                # Fallback: Trust FinBERT alone (Weak signal)
+                # Since polarity is low (<0.5), we allow it to pass but it will be weak.
+                # Logic: We treat ABSA score as 0 (Neutral/Unknown) in the weighted mix
+                # Combined = 0.6 * FinBERT + 0.4 * 0 = 0.6 * FinBERT
+                combined_score = 0.6 * f_score 
+
+            total_score += combined_score
+            count += 1
+            
+        if count == 0:
+            return 0.0
+            
+        final_avg_score = total_score / count
+        
+        # Clamp
+        final_avg_score = max(-1.0, min(1.0, final_avg_score))
+        
+        return final_avg_score
 
 class DecayModel:
     """
@@ -97,84 +171,69 @@ class DecayModel:
     def __init__(self, half_life_days: Optional[float] = None):
         self.half_life = half_life_days if half_life_days is not None else settings.SENTIMENT_DECAY_HALFLIFE
         self.lambda_param = np.log(2) / self.half_life
-        self.noise_threshold = settings.SENTIMENT_NOISE_THRESHOLD
+        # [FIX] Lower threshold to avoid "Dead Fish" on subtle news
+        self.noise_threshold = 0.01 # Was settings.SENTIMENT_NOISE_THRESHOLD or 0.1
 
     def apply_decay(self, dates: pd.DatetimeIndex, raw_scores: Dict[pd.Timestamp, float]) -> pd.Series:
         """
-        Applies linear superposition decay.
-        S_t = Sum(Score_i * exp(-lambda * (t - t_i)))
-        
-        Args:
-            dates: The full range of dates to cover.
-            raw_scores: A dictionary mapping Date -> Raw Score (from LLM).
-            
-        Returns:
-            pd.Series with index=dates and values=decayed_scores.
+        Applies exponential decay to sentiment scores over time using Vectorized operations.
         """
-        # Create a Series with all dates, initialized to 0
-        # We use a sparse approach: create a series of raw scores aligned to dates
-        raw_series = pd.Series(0.0, index=dates)
+        # 1. Align Raw Scores to Full Date Range
+        # Create a Series with NaNs where there is no score
+        raw_series = pd.Series(np.nan, index=dates)
         
-        # Fill in the raw scores
-        for date, score in raw_scores.items():
-            if date in raw_series.index:
-                # If multiple news on same day, we could sum them or take max. 
-                # Here we assume one score per day or sum if pre-aggregated.
-                # If raw_scores is just a dict, it overwrites. 
-                # Ideally raw_scores should be handled carefully if multiple events.
-                # But for now, let's assume the input dict has unique dates.
-                raw_series[date] = score
-
-        # Optimization:
-        # Instead of double loop, we can use a recursive formulation or convolution.
-        # Recursive: S_t = S_{t-1} * decay + NewScore_t
-        # But this is only true if time steps are uniform (1 day).
-        # Since 'dates' is a DatetimeIndex with freq='D' (usually), we can assume uniform steps.
+        # Fill only existing dates (Much faster than iterating)
+        # We need to construct a Series from the dict and then reindex
+        # But for safety/robustness with duplicates in dict (if any), let's do:
+        incoming_series = pd.Series(raw_scores)
+        # Align to our target index
+        # We assume dates is sorted and unique mostly, but let's be safe
+        aligned_scores = incoming_series.reindex(dates) 
         
-        # Let's verify frequency. If not uniform, we must use the exact time difference.
-        # For robustness, let's use the exact formula with a lookback window.
-        # However, full O(N^2) is slow.
-        # The recursive formula S_t = S_{t-1} * exp(-lambda * dt) + Raw_t is O(N).
+        # 2. Fill NaNs with previous values (Forward Fill) for standard decay continuity?
+        # WAIT: The original logic was:
+        # s_t = (last_val * decay) + (new_val * (1-decay))
+        # If new_val is 0 (missing), we want s_t = last_val * decay (pure decay)
+        # ewm(adjust=False) implements: y_t = (1-a)*y_{t-1} + a*x_t
+        # This assumes x_t exists.
         
-        decayed_values = []
-        last_val = 0.0
-        last_date = dates[0]
+        # If x_t is missing (0 implicit in original logic?), the original logic said:
+        # "raw_series = pd.Series(0.0...)" -> Default was 0.0.
+        # "raw_series[date] = score"
         
-        # We iterate through the dates. 
-        # Note: raw_series contains 0.0 where no news.
+        # Original Logic Analysis:
+        # if i==0: s_t = raw
+        # else: s_t = last * decay + raw * (1-decay)
+        # raw is 0.0 if not present.
         
-        # Pre-convert to numpy for speed
-        date_values = dates.values
-        raw_values = raw_series.values
+        # So it equates to: Update with 0.0 ("Neutral/Msg") if no news.
+        # This means sentiment decays towards 0.0.
         
-        # We need time deltas in days.
-        # Let's assume daily frequency for the loop to keep it simple and fast.
-        # If dates are missing (gaps), we calculate exact delta.
+        # Implementation with EWM:
+        # Fill missing with 0.0
+        aligned_scores = aligned_scores.fillna(0.0)
         
-        for i in range(len(dates)):
-            current_date = date_values[i]
-            raw_val = raw_values[i]
-            
-            if i == 0:
-                # First day
-                s_t = raw_val
-            else:
-                # Calculate days elapsed since last step
-                # (current_date - last_date) in days
-                # numpy timedelta64 to float days
-                delta_days = (current_date - last_date) / np.timedelta64(1, 'D')
-                
-                decay_factor = np.exp(-self.lambda_param * delta_days)
-                s_t = last_val * decay_factor + raw_val
-            
-            decayed_values.append(s_t)
-            last_val = s_t
-            last_date = current_date
-            
-        result_series = pd.Series(decayed_values, index=dates)
+        # Clamp inputs
+        aligned_scores = aligned_scores.clip(-1.0, 1.0)
         
-        # Noise filter
+        # EWM
+        # Note: pandas ewm assumes constant time steps if 'times' not provided.
+        # dates passed in IS the time index.
+        # We use 'halflife' argument which handles the decay factor calculation automatically.
+        # ewm(halflife='5 days', times=dates) is supported in pandas >= 1.2
+        
+        try:
+             # Try modern pandas times-based ewm
+             result_series = aligned_scores.ewm(halflife=f"{self.half_life} days", times=dates, adjust=False).mean()
+        except Exception:
+             # Fallback for older pandas or if dates index is not DatetimeIndex compatible
+             # Assume daily steps if we can't use times
+             result_series = aligned_scores.ewm(halflife=self.half_life, adjust=False).mean()
+             
+        # Clamp result
+        result_series = result_series.clip(-1.0, 1.0) # clip is vectorized max/min
+        
+        # Noise Filter
         result_series[result_series.abs() < self.noise_threshold] = 0.0
         
         return result_series
-

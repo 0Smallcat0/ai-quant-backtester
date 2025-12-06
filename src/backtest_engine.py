@@ -1,16 +1,15 @@
 import pandas as pd
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
+import queue
 import math
 import numpy as np
-from src.config.settings import settings
+from dataclasses import dataclass
+from typing import List, Optional, Dict, Any
+from datetime import datetime
 
-@dataclass
-class Order:
-    date: pd.Timestamp
-    type: str  # 'BUY' or 'SELL'
-    quantity: float = 0.0
-    
+from src.config.settings import settings
+from src.core.events import EventType, MarketEvent, SignalEvent, OrderEvent, FillEvent
+from src.execution.execution_handler import ExecutionHandler
+
 @dataclass
 class Trade:
     entry_date: pd.Timestamp
@@ -18,25 +17,20 @@ class Trade:
     quantity: float
     type: str
     entry_equity: float = 0.0
+    commission: float = 0.0
 
 class BacktestEngine:
     """
-    Event-driven Backtest Engine.
+    Event-driven Backtest Engine (v2.0).
     
-    Simulates the execution of a trading strategy on historical data, accounting for
-    transaction costs (commission, slippage) and position sizing rules.
+    Uses a Queue-based event loop to process Market, Signal, Order, and Fill events.
     """
-    def __init__(self, initial_capital: float = settings.INITIAL_CAPITAL, commission_rate: float = settings.COMMISSION_RATE, slippage: float = settings.SLIPPAGE, min_commission: float = settings.MIN_COMMISSION, long_only: bool = False):
-        """
-        Initializes the BacktestEngine.
-
-        Args:
-            initial_capital (float): Starting capital for the portfolio.
-            commission_rate (float): Commission rate per trade (e.g., 0.001 for 0.1%).
-            slippage (float): Simulated slippage rate (e.g., 0.001 for 0.1%).
-            min_commission (float): Minimum commission per trade in dollars.
-            long_only (bool): If True, short selling is disabled.
-        """
+    def __init__(self, initial_capital: float = settings.INITIAL_CAPITAL, 
+                 commission_rate: float = settings.COMMISSION_RATE, 
+                 slippage: float = settings.SLIPPAGE, 
+                 min_commission: float = settings.MIN_COMMISSION, 
+                 long_only: bool = False):
+        
         self.initial_capital = float(initial_capital)
         self.current_capital = float(initial_capital)
         self.commission_rate = float(commission_rate)
@@ -44,284 +38,245 @@ class BacktestEngine:
         self.min_commission = float(min_commission)
         self.long_only = long_only
         
+        # Event Architecture
+        self.events = queue.Queue()
+        self.execution_handler = ExecutionHandler(self.events)
+        
+        # State
         self.trades: List[Trade] = []
         self._equity_list: List[Dict[str, Any]] = []
         self.equity_curve: pd.DataFrame = pd.DataFrame()
-        self.pending_order: Optional[Order] = None
         self.position = 0.0
+        self.latest_prices: Dict[str, float] = {}
         
         # Position Sizing Settings
-        self.position_sizing_method = "fixed_percent" # Default
-        self.position_sizing_target = 0.95 # Default 95%
+        self.position_sizing_method = "fixed_percent"
+        self.position_sizing_target = 0.95
 
     def set_position_sizing(self, method: str, target: Optional[float] = None, amount: Optional[float] = None) -> None:
-        """
-        Configures the position sizing algorithm.
-
-        Args:
-            method (str): 'fixed_percent' or 'fixed_amount'.
-            target (float, optional): Target percentage (0.0 to 1.0) for 'fixed_percent'.
-            amount (float, optional): Target dollar amount for 'fixed_amount'.
-        """
         self.position_sizing_method = method
-        if method == "fixed_percent":
-            if target is not None:
-                self.position_sizing_target = float(target)
-        elif method == "fixed_amount":
-            if amount is not None:
-                self.position_sizing_target = float(amount)
+        if method == "fixed_percent" and target is not None:
+            self.position_sizing_target = float(target)
+        elif method == "fixed_amount" and amount is not None:
+            self.position_sizing_target = float(amount)
 
     def _get_current_equity(self, price: float) -> float:
-        """Calculates total portfolio equity at the given price."""
         return self.current_capital + (self.position * price)
+
+    def _process_event(self, event) -> None:
+        """
+        Main Event Dispatcher.
+        """
+        if event.type == EventType.MARKET:
+            # Market Update - Update internal state if needed (usually handled by strategy looking at data)
+            pass
+
+        elif event.type == EventType.SIGNAL:
+            self._handle_signal(event)
+
+        elif event.type == EventType.ORDER:
+            # Route to Execution Handler
+            # In a real engine, we might check risk limits here first
+            self.execution_handler.execute_order(
+                event, 
+                self.latest_prices, 
+                event.timestamp, # Use event timestamp? Or market time?
+                self.slippage,
+                self # Passing self as commission model provider logic
+            )
+
+        elif event.type == EventType.FILL:
+            self._handle_fill(event)
+
+    def calculate(self, fill_cost: float, quantity: float) -> float:
+        """Commission Calculation Interface for ExecutionHandler."""
+        trade_value = fill_cost
+        return max(trade_value * self.commission_rate, self.min_commission)
+
+    def _handle_signal(self, event: SignalEvent) -> None:
+        """
+        Converts Signal to Order based on Position Sizing.
+        Target-Delta execution logic.
+        """
+        timestamp = event.timestamp
+        symbol = event.symbol
+        signal_strength = event.strength # Target exposure (-1.0 to 1.0)
+        
+        # [V2.0 CORE] Check for HRP Fused Weights
+        # If the signal event carries a portfolio allocation (HRP), override the simple strength
+        if hasattr(event, 'fused_weights') and event.fused_weights:
+            # For single-ticker engine, we look up our symbol
+            weight = event.fused_weights.get(symbol)
+            if weight is not None:
+                signal_strength = float(weight)
+        
+        # Ghost Trade Filtering
+        if abs(signal_strength) < 0.01:
+            signal_strength = 0.0
+
+        current_price = self.latest_prices.get(symbol)
+        if not current_price:
+            return
+
+        current_equity = self._get_current_equity(current_price)
+
+        # 1. Calculate Target Quantity
+        target_qty = 0.0
+        
+        if self.position_sizing_method == "fixed_amount":
+            target_exposure = self.position_sizing_target * signal_strength
+            target_qty = target_exposure / (current_price + settings.EPSILON)
+        else: # fixed_percent
+            target_exposure = current_equity * self.position_sizing_target * signal_strength
+            target_qty = target_exposure / (current_price + settings.EPSILON)
+
+        # Minimum Exposure Filter
+        target_value = target_qty * current_price
+        if abs(target_value) < (current_equity * settings.MIN_EXPOSURE_THRESHOLD):
+            target_qty = 0.0
+
+        # Long Only Enforce
+        if self.long_only:
+            target_qty = max(0.0, target_qty)
+
+        # 2. Calculate Delta
+        delta_qty = target_qty - self.position
+        
+        # 3. Generate Order
+        if abs(delta_qty) > settings.EPSILON:
+            direction = "BUY" if delta_qty > 0 else "SELL"
+            quantity = abs(delta_qty)
+            
+            # Simple Cash Check for BUY (Approximate, exact check is at Fill/Exec)
+            if direction == "BUY":
+                est_cost = quantity * current_price
+                if est_cost > self.current_capital:
+                    # Cap quantity
+                    quantity = math.floor(self.current_capital / (current_price * (1+self.commission_rate)))
+            
+            # Oversell Protection
+            if direction == "SELL" and self.long_only:
+                 quantity = min(quantity, self.position)
+
+            if quantity > settings.EPSILON:
+                order = OrderEvent(symbol, "MKT", quantity, direction)
+                # Hack: Attach timestamp to order for logging/exec
+                order.timestamp = timestamp 
+                self.events.put(order)
+
+    def _handle_fill(self, event: FillEvent) -> None:
+        """
+        Updates Portfolio State from Fill.
+        """
+        if event.direction == "BUY":
+            total_cost = event.net_cost() # Cost + Comm
+            self.current_capital -= total_cost
+            self.position += event.quantity
+        else: # SELL
+            net_proceeds = event.net_cost() # Cost - Comm (FillCost is positive, net_cost handles logic?)
+            # Wait, net_cost implementation:
+            # BUY: cost + comm
+            # SELL: cost - comm
+            # Correct.
+            self.current_capital += net_proceeds
+            self.position -= event.quantity
+            
+            if abs(self.position) < settings.EPSILON:
+                self.position = 0.0
+
+        self.trades.append(Trade(
+            entry_date=event.timestamp,
+            entry_price=event.fill_cost / event.quantity, # Avg Price
+            quantity=event.quantity,
+            type=event.direction,
+            entry_equity=self._get_current_equity(self.latest_prices.get(event.symbol, 0)),
+            commission=event.commission
+        ))
 
     def run(self, data: pd.DataFrame, signals: pd.Series, start_date: Optional[str] = None, end_date: Optional[str] = None) -> None:
         """
-        Executes the backtest loop using Target-Delta execution logic.
-
-        Args:
-            data (pd.DataFrame): OHLCV data with a DateTimeIndex.
-            signals (pd.Series): Series of trading signals.
-                                 Magnitude indicates target exposure (e.g., 1.0 = 100% Long, -0.5 = 50% Short).
-                                 0.0 = Flat/Cash.
-            start_date (str, optional): Start date for the backtest (inclusive).
-            end_date (str, optional): End date for the backtest (inclusive).
+        Executes the backtest using the Event Loop.
+        Adapts vectorized inputs (data/signals) into a stream of events.
         """
+        # Reset State
         self.current_capital = self.initial_capital
         self.position = 0.0
         self.trades = []
         self._equity_list = []
         self.equity_curve = pd.DataFrame()
-        self.pending_order = None
+        self.latest_prices = {}
         
-        # [ROBUSTNESS] 1. Input Data Validation & Normalization
-        # Create a copy to avoid modifying the original dataframe
+        # Pre-process Data
         df = data.copy()
         df.columns = [c.lower() for c in df.columns]
         
-        # [NEW] Date Slicing for Stress Testing / Audit
         if start_date:
             df = df[df.index >= pd.Timestamp(start_date)]
         if end_date:
             df = df[df.index <= pd.Timestamp(end_date)]
             
         if df.empty:
-            print(f"Warning: No data found for range {start_date} to {end_date}. Backtest aborted.")
+            print("No data for backtest.")
             return
 
-        required_cols = ['open', 'close']
-        missing = [c for c in required_cols if c not in df.columns]
-        if missing:
-            raise ValueError(f"Input data must contain columns: {required_cols}. Missing: {missing}")
-            
-        # Align data and signals
-        # [ARCHITECTURAL ENFORCEMENT] Force T+1 Lag
-        # We shift signals by 1 to ensure that a signal generated at T (Close) 
-        # is only available for execution at T+1 (Open).
-        # This prevents any possibility of look-ahead bias in the execution loop.
-        
-        # Check if signals is DataFrame or Series
-        target_sizes_arr = None
-        
+        # Align Signals (Shift logic preserved for safety)
         if isinstance(signals, pd.DataFrame):
-            # Expect 'signal' column, optional 'target_size'
-            if 'signal' not in signals.columns:
-                raise ValueError("Signals DataFrame must contain 'signal' column.")
-            
-            shifted_signals = signals.shift(1).fillna(0)
-            
-            # Extract signal series
-            aligned_signal_series = shifted_signals['signal']
-            
-            # Extract target_size if exists
-            if 'target_size' in shifted_signals.columns:
-                # We need to align it with df
-                # Join to ensure index alignment
-                # Note: We'll handle extraction after join
-                pass
-            
-            # Join everything to df
-            # We rename columns to avoid collision if needed, but 'signal' is standard
-            combined = df.join(shifted_signals[['signal']], how="left").fillna({"signal": 0})
-            
-            if 'target_size' in shifted_signals.columns:
-                combined = combined.join(shifted_signals[['target_size']], how="left").fillna({"target_size": 0})
-                target_sizes_arr = combined['target_size'].values
-            
+             aligned_signals = signals['signal'].shift(1).fillna(0)
+             if 'target_size' in signals.columns:
+                 # TODO: Support advanced target size passed in signal event
+                 pass
         else:
-            # It's a Series
-            aligned_signals = signals.shift(1).fillna(0)
-            combined = df.join(aligned_signals.rename("signal"), how="left").fillna({"signal": 0})
+             aligned_signals = signals.shift(1).fillna(0)
+             
+        # Combine
+        combined = df.join(aligned_signals.rename("signal"), how="left").fillna({"signal": 0})
         
-        # [SAFETY] Pre-flight Data Integrity Check
-        if combined.isnull().values.any():
-            raise ValueError("Input data contains NaN values. Please clean data before backtesting.")
-        if np.isinf(combined.select_dtypes(include=np.number)).values.any():
-            raise ValueError("Input data contains Infinite values. Please clean data before backtesting.")
-
-        # [OPTIMIZATION] Pre-fetch arrays to avoid .iloc overhead inside loop
-        dates = combined.index.values
-        opens = combined['open'].values
-        highs = combined['high'].values
-        lows = combined['low'].values
-        closes = combined['close'].values
-        signals_arr = combined['signal'].values
-        # target_sizes_arr is already set above if available
+        # -------------------------------------------------------------
+        # THE EVENT LOOP (Vectorized Hybrid)
+        # -------------------------------------------------------------
+        # Optimization: Convert to Numpy for fast iteration (avoid iterrows)
+        dates = combined.index.to_numpy()
+        opens = combined['open'].to_numpy()
+        closes = combined['close'].to_numpy()
+        signals_arr = combined['signal'].to_numpy()
         
-        # Pre-calculate length
-        n_candles = len(dates)
+        n_rows = len(dates)
         
-        for i in range(n_candles):
-            # ---------------------------------------------------
-            # 1. Signal Processing & Target Calculation (Based on Shifted Signal)
-            # ---------------------------------------------------
-            # Since signals are shifted by 1, row['signal'] represents the signal from Yesterday (Close).
-            # We use this to determine the Target Position for Today (Open).
-            
+        for i in range(n_rows):
             date = dates[i]
-            signal = signals_arr[i]
-            current_close = float(closes[i])
-            current_open = float(opens[i])
+            current_price = opens[i] # Trade at Open
+            close_price = closes[i]
+            signal_val = signals_arr[i]
             
-            # Calculate Current Equity (at Open) for sizing
-            # Note: We use Open price for sizing because we are trading at Open
-            current_equity_open = self._get_current_equity(current_open)
+            self.latest_prices['TICKER'] = current_price 
             
-            # [FIX] Ghost Trade Filtering
-            # Filter out extremely small signals that are likely noise or will be eroded by commissions.
-            if abs(signal) < 0.01:
-                signal = 0.0
+            # [PERFORMANCE] Optimization: Remove redundant MarketEvent (No-op in V2)
+            # self.events.put(MarketEvent(date))
             
-            # Calculate Target Position (Units)
-            target_qty = 0.0
+            # [PERFORMANCE] Optimization: Only fire SignalEvent if state change is possible
+            # If Signal is 0 and we have no position, nothing happens.
+            if signal_val != 0 or abs(self.position) > settings.EPSILON:
+                 self.events.put(SignalEvent("Strat1", 'TICKER', date, "TARGET", strength=signal_val))
             
-            # [SAFETY] Division by zero protection
-            if current_open > 0:
-                # Determine sizing factor
-                if target_sizes_arr is not None:
-                    # Use the provided target size from strategy
-                    # This overrides the default position_sizing_target
-                    sizing_factor = float(target_sizes_arr[i])
-                else:
-                    # Use default global setting
-                    sizing_factor = float(self.position_sizing_target)
-
-                if self.position_sizing_method == "fixed_amount":
-                    target_exposure = sizing_factor * signal
-                    target_qty = target_exposure / (current_open + settings.EPSILON)
-                else: # fixed_percent
-                    target_exposure = current_equity_open * sizing_factor * signal
-                    target_qty = target_exposure / (current_open + settings.EPSILON)
-            
-            # [FIX] Minimum Exposure Filter
-            # Prevent ghost positions by ensuring target value is at least 0.1% of equity
-            # MIN_EXPOSURE_THRESHOLD is now sourced from settings
-            target_value = target_qty * current_open
-            if abs(target_value) < (current_equity_open * settings.MIN_EXPOSURE_THRESHOLD):
-                target_qty = 0.0
-            
-            # Enforce Long-Only
-            if self.long_only and target_qty < 0:
-                target_qty = 0.0
-            elif self.long_only:
-                target_qty = max(0.0, target_qty)
+            # 4. Process Events
+            while not self.events.empty():
+                event = self.events.get()
+                self._process_event(event)
                 
-            # Calculate Delta
-            delta_qty = target_qty - self.position
-            
-            # ---------------------------------------------------
-            # 2. Execution (Market On Open)
-            # ---------------------------------------------------
-            if abs(delta_qty) > settings.EPSILON:
-                order_type = "BUY" if delta_qty > 0 else "SELL"
-                quantity = abs(delta_qty)
-                
-                # Apply Slippage
-                if order_type == "BUY":
-                    execution_price = current_open * (1 + self.slippage)
-                else: # SELL
-                    execution_price = current_open * (1 - self.slippage)
-                
-                trade_executed = False
-                
-                if order_type == "BUY":
-                    # Bankruptcy/Cash Protection
-                    denom_rate = execution_price * (1 + self.commission_rate)
-                    if denom_rate > settings.EPSILON:
-                        max_qty_by_cash = math.floor(self.current_capital / denom_rate)
-                    else:
-                        max_qty_by_cash = 0.0
-                        
-                    quantity = min(quantity, float(max_qty_by_cash))
-                    
-                    trade_value = quantity * execution_price
-                    commission = max(trade_value * self.commission_rate, self.min_commission)
-                    total_cost = trade_value + commission
-                    
-                    if self.current_capital >= total_cost - settings.EPSILON and quantity > settings.EPSILON:
-                        self.current_capital -= total_cost
-                        self.position += quantity
-                        trade_executed = True
-                
-                elif order_type == "SELL":
-                    # Oversell Protection
-                    if self.long_only:
-                        quantity = min(quantity, self.position)
-                    
-                    if quantity > settings.EPSILON:
-                        trade_value = quantity * execution_price
-                        commission = max(trade_value * self.commission_rate, self.min_commission)
-                        net_revenue = trade_value - commission
-                        
-                        self.current_capital += net_revenue
-                        self.position -= quantity
-                        
-                        # Fix floating point drift
-                        if abs(self.position) < settings.EPSILON:
-                            self.position = 0.0
-                        
-                        trade_executed = True
-                
-                if trade_executed:
-                    self.trades.append(Trade(
-                        entry_date=date,
-                        entry_price=execution_price,
-                        quantity=abs(quantity),
-                        type=order_type,
-                        entry_equity=self._get_current_equity(execution_price)
-                    ))
-
-            # ---------------------------------------------------
-            # 3. Market Close: Update Daily Equity & Check Bankruptcy
-            # ---------------------------------------------------
-            # Recalculate equity at Close
-            current_equity_close = self._get_current_equity(current_close)
-            
-            # Bankruptcy Check
-            if current_equity_close <= 0:
-                self._equity_list.append({
-                    "date": date, "equity": 0.0, "cash": 0.0, "position_value": 0.0
-                })
-                # Fill remaining dates with 0
-                for j in range(i + 1, n_candles):
-                    self._equity_list.append({
-                        "date": dates[j], "equity": 0.0, "cash": 0.0, "position_value": 0.0
-                    })
-                print(f"Bankruptcy detected at {date}. Stopping backtest.")
-                break
-
-            # ---------------------------------------------------
-            # 3. Update Daily Equity
-            # ---------------------------------------------------
-            position_value = self.position * current_close
-            equity = self.current_capital + position_value
+            # 5. End of Day Accounting
+            self.latest_prices['TICKER'] = close_price
+            current_equity = self._get_current_equity(close_price)
+            position_value = self.position * close_price
             
             self._equity_list.append({
-                "date": date, 
-                "equity": equity,
+                "date": date,
+                "equity": current_equity,
                 "cash": self.current_capital,
                 "position_value": position_value
             })
             
-        # [OPTIMIZATION] Convert list to DataFrame at the end
+            if current_equity <= 0:
+                print(f"Bankruptcy at {date}")
+                break
+
         self.equity_curve = pd.DataFrame(self._equity_list)

@@ -3,6 +3,7 @@ import pandas as pd
 from src.data_loader.providers.base import BaseDataProvider
 import time
 from src.config.settings import settings
+from src.utils import detect_market
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,10 +25,12 @@ class YFinanceProvider(BaseDataProvider):
             try:
                 # [FIX] Disable auto_adjust for Taiwan stocks to prevent zero volume bug
                 use_auto_adjust = True
-                if ticker.endswith('.TW') or ticker.endswith('.TWO'):
+                if detect_market(ticker) == 'TW':
                     use_auto_adjust = False
                 
-                df = yf.download(ticker, start=start_date, end=end_date, progress=False, multi_level_index=False, auto_adjust=use_auto_adjust)
+                # [FIX] Use Ticker object for thread-safety
+                dat = yf.Ticker(ticker)
+                df = dat.history(start=start_date, end=end_date, auto_adjust=use_auto_adjust)
                 
                 if df.empty:
                     raise ValueError(f"No data found for {ticker} from {start_date} to {end_date}")
@@ -44,6 +47,10 @@ class YFinanceProvider(BaseDataProvider):
                      pass
 
                 # [CLEANUP] 1. Future Filter
+                # History returns TZ-aware index. Convert to naive for comparison with today.
+                if df.index.tz is not None:
+                    df.index = df.index.tz_localize(None)
+                    
                 today = pd.Timestamp.now().normalize()
                 df = df[df.index <= today]
                 
@@ -81,6 +88,21 @@ class YFinanceProvider(BaseDataProvider):
                 return df[required_cols]
 
             except Exception as e:
+                error_str = str(e)
+                # [OPTIMIZATION] Fast Fail for fatal errors
+                # [FIX] Catch Dead Tickers explicitly
+                if "No data found" in error_str:
+                     logger.warning(f"No data found for {ticker} in range {start_date}-{end_date}. Returning empty. (Error: {error_str})")
+                     return pd.DataFrame()
+
+                if "symbol may be delisted" in error_str:
+                     logger.error(f"DEAD TICKER DETECTED: {ticker}")
+                     raise DataFetchError(f"DEAD_TICKER: {ticker} seems to be delisted or invalid.")
+
+                if "YFTzMissingError" in error_str or "delisted" in error_str.lower():
+                     logger.error(f"FATAL YFinance error for {ticker}: {e}. Aborting retries.")
+                     raise DataFetchError(f"Fatal error: {e}")
+
                 if attempt < max_retries - 1:
                     sleep_time = settings.RETRY_BACKOFF_FACTOR ** attempt
                     logger.warning(f"YFinance error for {ticker}: {e}. Retrying in {sleep_time}s...")

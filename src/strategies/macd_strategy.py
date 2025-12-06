@@ -1,4 +1,4 @@
-from strategies.base import Strategy
+from src.strategies.base import Strategy
 import pandas as pd
 import numpy as np
 
@@ -13,25 +13,22 @@ class MACDStrategy(Strategy):
         return series.ewm(span=period, adjust=False).mean()
 
     def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
-        data = data.copy()
-        data.columns = [c.lower() for c in data.columns]
+        self.data = data.copy()
+        self.data.columns = [c.lower() for c in self.data.columns]
         
-        ema_fast = self.ema(data['close'], self.fast)
-        ema_slow = self.ema(data['close'], self.slow)
-        macd_line = ema_fast - ema_slow
-        signal_line = self.ema(macd_line, self.signal_period)
+        close = self.data['close']
+        ema_fast = self.ema(close, self.fast)
+        ema_slow = self.ema(close, self.slow)
+        macd = ema_fast - ema_slow
+        signal_line = self.ema(macd, self.signal_period)
         
-        data['macd'] = macd_line
-        data['signal_line'] = signal_line
-        data['prev_macd'] = macd_line.shift(1)
-        data['prev_signal'] = signal_line.shift(1)
+        self.data['macd'] = macd
+        self.data['signal_line'] = signal_line
         
-        data['signal'] = 0
-        # 向上突破買入
-        buy_condition = (data['macd'] > data['signal_line']) & (data['prev_macd'] <= data['prev_signal'])
-        data.loc[buy_condition, 'signal'] = 1
-        # 向下突破賣出
-        sell_condition = (data['macd'] < data['signal_line']) & (data['prev_macd'] >= data['prev_signal'])
-        data.loc[sell_condition, 'signal'] = -1
+        prev_macd = macd.shift(1)
+        prev_signal = signal_line.shift(1)
         
-        return data
+        self.data['entries'] = (macd > signal_line) & (prev_macd <= prev_signal)
+        self.data['exits'] = (macd < signal_line) & (prev_macd >= prev_signal)
+        
+        return self.convert_to_signal(self.data)

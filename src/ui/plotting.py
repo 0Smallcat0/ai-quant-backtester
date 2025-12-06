@@ -227,20 +227,31 @@ def plot_monte_carlo_simulation(sim_results: dict) -> go.Figure:
     # Plot Cloud (Subset of simulations for performance)
     n_sims = len(curves)
     n_plot = min(n_sims, 100) # Plot at most 100 lines
-    # Ensure we don't crash if n_sims < 100 (though unlikely with default settings)
+    
     if n_sims > 0:
         indices = np.random.choice(n_sims, n_plot, replace=False)
         
+        # [PERFORMANCE] Optimization: Merge traces into single Scattergl
+        # Using None to break lines creates discontinuous segments in a single trace
+        x_combined = []
+        y_combined = []
+        
         for idx in indices:
-            fig.add_trace(go.Scatter(
-                x=x_axis,
-                y=curves[idx],
-                mode='lines',
-                line=dict(color='gray', width=1),
-                opacity=0.1,
-                showlegend=False,
-                hoverinfo='skip'
-            ))
+            x_combined.extend(x_axis)
+            x_combined.append(None) # Break line
+            y_combined.extend(curves[idx])
+            y_combined.append(None)
+            
+        fig.add_trace(go.Scattergl(
+            x=x_combined,
+            y=y_combined,
+            mode='lines',
+            line=dict(color='gray', width=1),
+            opacity=0.1,
+            showlegend=False,
+            hoverinfo='skip',
+            name='Simulations'
+        ))
         
     # Plot Percentiles
     fig.add_trace(go.Scatter(
@@ -296,13 +307,37 @@ def plot_price_history(df: pd.DataFrame, ticker: str) -> go.Figure:
         name=ticker
     ))
 
-    # Calculate default zoom range (last 30 days)
+    # Calculate Smart Zoom range
+    initial_range = None
     if not df.empty:
         last_date = df.index.max()
+        
+        # Default: Last 30 days
         first_date = last_date - pd.Timedelta(days=30)
+        
+        # [FEATURE] Smart Zoom for Sentiment
+        # If sentiment exists and is not flat 0, zoom to where the data starts
+        if 'sentiment' in df.columns:
+            # Check if there is ANY non-zero sentiment
+            # [FIX] Filter out near-zero noise (abs < 0.001)
+            non_zero_dates = df[df['sentiment'].abs() > 0.001].index
+            
+            if not non_zero_dates.empty:
+                first_valid = non_zero_dates.min()
+                # Add 2 days padding before the first data point for context
+                # But don't go further back than the actual data start
+                smart_start = first_valid - pd.Timedelta(days=2)
+                
+                # Use smart_start only if it provides a wider/better view than the default?
+                # Actually, user wants it to focus on "useful data".
+                # If valid data is only last 5 days, smart_start is T-7. Default is T-30.
+                # User complaint: "Time span too long (lines of 0s)". So we prefer the tighter T-7.
+                # If valid data is 2 years, smart_start is T-2years. Default is T-30.
+                # We probably still want a cap? Or just show all valid history?
+                # The request implies avoiding "lines of 0s". So showing all valid history is better than showing 0s.
+                first_date = smart_start
+
         initial_range = [first_date, last_date]
-    else:
-        initial_range = None
 
     # 3. Update X-axes Range Selector (Button Styling)
     fig.update_xaxes(

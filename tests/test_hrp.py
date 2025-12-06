@@ -1,7 +1,7 @@
 import unittest
 import pandas as pd
 import numpy as np
-from src.strategies.portfolio import HRPAllocator
+from src.analytics.hrp_engine import HRPEngine as HRPAllocator
 
 class TestHRPAllocator(unittest.TestCase):
     def setUp(self):

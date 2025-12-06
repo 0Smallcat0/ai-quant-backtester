@@ -63,6 +63,21 @@ The engine implements a robust **Provider Pattern** with cascading failover to e
 pip install -r requirements.txt
 ```
 
+## 🏗️ Project Structure
+```text
+src/
+├── ai/                 # LLM Client & Translation Layer
+├── analytics/          # Sentiment & HRP Engines
+├── backtest/           # Backtest Runner
+├── config/             # Settings & Constants
+├── core/               # Event Definitions (v2.0)
+├── data/               # News Engine, Fetchers
+├── execution.py        # Order Execution Handler
+├── strategies/         # Quant Strategies
+├── ui/                 # Streamlit Pages
+└── backtest_engine.py  # Main Engine
+```
+
 ### 2. Configuration
 Copy the example environment file and set your OpenAI API Key:
 ```bash

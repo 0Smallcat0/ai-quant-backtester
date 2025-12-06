@@ -5,18 +5,31 @@ import pandas as pd
 from datetime import datetime
 import os
 import logging
+import numpy as np
 
-# Add src to python path to allow imports
-try:
-    from src.utils import add_project_root, sanitize_ticker, strip_quotes
-except ImportError:
-    from utils import add_project_root, sanitize_ticker, strip_quotes
+# [CRITICAL FIX] Add Project Root to sys.path BEFORE importing local modules
+from pathlib import Path
+
+# Get the directory containing this script (src/)
+current_dir = Path(__file__).resolve().parent
+# Get the project root (parent of src/)
+project_root = current_dir.parent
+
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+# Now we can safely import from src
+from src.utils import add_project_root, sanitize_ticker, strip_quotes
+# Ensure utils also adds the path for other modules just in case
 add_project_root()
 
+# Local Imports
+from src.analytics.dashboard_analytics import generate_dashboard_data
+from src.analytics.hrp_engine import HRPEngine
 from src.data_engine import DataManager
 from src.strategies.loader import StrategyLoader, StrategyLoadError
 from src.backtest_engine import BacktestEngine
-from src.strategies.presets import PRESET_STRATEGIES
+# from src.strategies.presets import PRESET_STRATEGIES
 from src.config.settings import settings
 from src.backtest.thick_engine import apply_latching_engine
 
@@ -28,16 +41,12 @@ def main():
     parser.add_argument("--end", "--end_date", "--to", dest="end", help="End date (YYYY-MM-DD)")
     parser.add_argument("--params", help="JSON string of strategy params")
     parser.add_argument("--json", action="store_true", help="Output results in JSON format")
+    parser.add_argument("--dashboard", action="store_true", help="Run in Dashboard mode")
     
     args = parser.parse_args()
     
     # Configure Logging
-    try:
-        from src.config.logging_config import setup_logging
-    except ImportError:
-        # Fallback if running as script
-        sys.path.append(str(settings.BASE_DIR))
-        from src.config.logging_config import setup_logging
+    from src.config.logging_config import setup_logging
         
     logger = setup_logging(__name__)
     logger.info(f"Data Engine Mode: {settings.DATA_UPDATE_MODE}")
@@ -52,6 +61,16 @@ def main():
         args.start = strip_quotes(args.start)
     if args.end:
         args.end = strip_quotes(args.end)
+
+    # [FIX] Historical Data Warning for Dashboard
+    if args.dashboard and args.start:
+        try:
+            start_dt = pd.to_datetime(args.start)
+            cutoff = datetime.now() - pd.Timedelta(days=30)
+            if start_dt < cutoff:
+                logger.warning("WARNING: NewsFetcher only supports Real-Time data. Historical sentiment (prior to 30 days ago) will default to 0.0.")
+        except Exception:
+            pass
     
     # Parse params
     strategy_params = {}
@@ -64,58 +83,29 @@ def main():
             logger.error(f"Error parsing params JSON: {e}")
             sys.exit(1)
     
-    # [FIX] Ensure root dir AND src dir are in sys.path
-    # Handled by add_project_root()
-
     try:
         # 1. Load Data
         logger.info(f"Loading data for {args.ticker}...")
         data_manager = DataManager(db_path=str(settings.DB_PATH))
-        df = data_manager.get_data(args.ticker)
+        
+        # [MODIFIED] Include sentiment if dashboard mode
+        # [OPTIMIZATION] Pass date range to filter at DB level
+        df = data_manager.get_data(
+            args.ticker, 
+            include_sentiment=args.dashboard,
+            start_date=args.start,
+            end_date=args.end
+        )
             
         if df.empty:
-            raise ValueError(f"No data found for ticker {args.ticker}")
-            
-        # Filter by date if provided
-        if args.start:
-            df = df[df.index >= args.start]
-        if args.end:
-            df = df[df.index <= args.end]
+            raise ValueError(f"No data found for ticker {args.ticker} in the specified date range")
             
         if df.empty:
             raise ValueError(f"No data found for ticker {args.ticker} in the specified date range")
 
         # 2. Load Strategy
-        # [FIX] Unmask errors: Remove broad try-except and allow errors to bubble up
-        # 2. Load Strategy
         loader = StrategyLoader()
-        strategy_class = None
-        
-        try:
-            # 1. Try loading via Loader (File or Exact Match)
-            strategy_class = loader.load_strategy(args.strategy_name)
-        except (StrategyLoadError, ImportError, AttributeError):
-            # 2. If Loader fails, proceed to Fallback (Presets)
-            pass
-
-        if strategy_class is None:
-            # 3. Fuzzy Search in Presets
-            # Case 1: Exact Match in Presets
-            if args.strategy_name in PRESET_STRATEGIES:
-                strategy_class = PRESET_STRATEGIES[args.strategy_name]
-            # Case 2: Suffix Auto-complete (e.g. "RSI" -> "RSIStrategy")
-            elif f"{args.strategy_name}Strategy" in PRESET_STRATEGIES:
-                strategy_class = PRESET_STRATEGIES[f"{args.strategy_name}Strategy"]
-            # Case 3: Case-Insensitive Search
-            else:
-                target_upper = args.strategy_name.upper()
-                for name, cls in PRESET_STRATEGIES.items():
-                    if name.upper() == target_upper or name.upper() == f"{target_upper}STRATEGY":
-                        strategy_class = cls
-                        break
-        
-        if strategy_class is None:
-            raise ValueError(f"Strategy '{args.strategy_name}' not found in files or presets.")
+        strategy_class = loader.fuzzy_search(args.strategy_name)
 
         # 3. Initialize Engine
         engine = BacktestEngine()
@@ -130,6 +120,9 @@ def main():
             strategy = strategy_class()
             
         # Generate Signals
+        # [FIX] Actually generate signals
+        signals_df = strategy.generate_signals(df)
+        
         # [MODIFIED] Thick Engine Integration
         # Detect if this is a "Thin Prompt" strategy (Entries/Exits) or Legacy (Signal)
         if 'entries' in signals_df.columns and 'exits' in signals_df.columns:
@@ -165,19 +158,25 @@ def main():
             
             performance = calculate_metrics(equity_curve, engine.trades, engine.initial_capital)
         
+        # Helper for JSON serialization
+        def default_converter(o):
+            if isinstance(o, (pd.Timestamp, datetime)):
+                return o.isoformat()
+            if isinstance(o, (np.int64, np.int32)):
+                return int(o)
+            if isinstance(o, (np.float64, np.float32)):
+                return float(o)
+            return str(o)
+
         # 6. Output Results
-        if args.json:
-            # Convert performance dict to JSON
-            # Handle non-serializable types if any (like numpy types)
-            def default_converter(o):
-                if isinstance(o, (pd.Timestamp, datetime)):
-                    return o.isoformat()
-                if isinstance(o, (np.int64, np.int32)):
-                    return int(o)
-                if isinstance(o, (np.float64, np.float32)):
-                    return float(o)
-                return str(o)
-                
+        if args.dashboard:
+            # === DASHBOARD MODE ===
+            # [REFACTOR] Delegated to src.analytics.dashboard_analytics
+            dashboard_data = generate_dashboard_data(performance, df, args.ticker, equity_curve)
+            
+            print(json.dumps(dashboard_data, default=default_converter))
+            
+        elif args.json:
             print(json.dumps(performance, default=default_converter, indent=2))
         else:
             logger.info("Backtest Results:")
