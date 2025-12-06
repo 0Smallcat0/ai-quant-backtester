@@ -1,0 +1,14 @@
+streamlit
+pandas
+numpy
+plotly
+yfinance
+openai
+python-dotenv
+feedparser
+beautifulsoup4
+twstock
+ccxt
+pandas-datareader
+pytest
+numba>=0.57.0
